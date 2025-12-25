@@ -1,8 +1,11 @@
 #pragma once
 
+#include "joypad.hpp"
+
 #include <cstdint>
 #include <cstddef>
 #include <array>
+#include <memory>
 
 namespace memory
 {
@@ -32,7 +35,7 @@ namespace memory
     class MemoryBus
     {
     public:
-        MemoryBus();
+        MemoryBus(std::unique_ptr<controller::Joypad>);
         ~MemoryBus();
 
         // 8-bit read/write operations
@@ -70,5 +73,8 @@ namespace memory
 
         // Interrupt Enable register - 1 byte (0xFFFF)
         uint8_t ie_register;
+
+        // Physical controller button handling
+        std::unique_ptr<controller::Joypad> joypad{nullptr};
     };
 }

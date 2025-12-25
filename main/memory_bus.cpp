@@ -3,9 +3,9 @@
 
 namespace memory
 {
-    MemoryBus::MemoryBus()
+    MemoryBus::MemoryBus(std::unique_ptr<controller::Joypad> joypad)
         : rom{0}, vram{0}, external_ram{0}, wram{0},
-          oam{0}, io_registers{0}, hram{0}, ie_register{0}
+          oam{0}, io_registers{0}, hram{0}, ie_register{0}, joypad{std::move(joypad)}
     {
         // Initialize memory
     }
@@ -56,9 +56,13 @@ namespace memory
         else if (address >= UNUSABLE_START && address <= UNUSABLE_END)
         {
             return 0xFF; // Returns 0xFF for unusable memory
+        } 
+        else if (address == IO_REGISTERS_START) 
+        {
+            return joypad->read(io_registers[0]);
         }
         // I/O Registers (0xFF00-0xFF7F)
-        else if (address >= IO_REGISTERS_START && address <= IO_REGISTERS_END)
+        else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             return io_registers[address - IO_REGISTERS_START];
         }
@@ -115,8 +119,15 @@ namespace memory
         {
             return;
         }
-        // I/O Registers (0xFF00-0xFF7F)
-        else if (address >= IO_REGISTERS_START && address <= IO_REGISTERS_END)
+        // Joypad register (0xFF00) - Seuls les bits 4-5 sont modifiables
+        else if (address == IO_REGISTERS_START)
+        {
+            // Masquer pour garder uniquement P14 et P15 (bits 4-5)
+            // Forcer les bits 7-6 à 1 (requis par le spec Game Boy)
+            io_registers[0] = (value & 0x30) | 0xC0;
+        }
+        // I/O Registers (0xFF01-0xFF7F)
+        else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             io_registers[address - IO_REGISTERS_START] = value;
             // TODO: Handle special I/O register side effects (DMA, timer, etc.)
