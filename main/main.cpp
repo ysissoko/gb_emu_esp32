@@ -8,7 +8,8 @@ extern "C" void app_main(void)
 {
     std::printf("Hello GB EMU ESP32!\n");
     std::printf("Chip revision: %s\n", esp_get_idf_version());
-
-    cpu::CPU cpu;
+    memory::MemoryBus mmu;
+    ppu::PPU ppu(mmu);
+    cpu::CPU cpu(mmu, ppu);
     cpu.run();
 }

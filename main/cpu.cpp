@@ -1,5 +1,6 @@
 #include "cpu.hpp"
 
+#include <cstdio>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -7,9 +8,43 @@
 namespace cpu
 {
 
-    CPU::CPU()
+    CPU::CPU(memory::MemoryBus& mmu, ppu::PPU& ppu) : mmu(mmu), ppu(ppu)
     {
-        // Constructor implementation
+        // Initialize registers
+        a = 0x01;
+        f = 0xB0;
+        b = 0x00;
+        c = 0x13;
+        d = 0x00;
+        e = 0xD8;
+        h = 0x01;
+        l = 0x4D;
+        sp = 0xFFFE;
+        pc = 0x0100; // Start execution at 0x0100
+        
+        // Initialize LCD registers with default values
+        // LCDC (0xFF40) - LCD Control
+        mmu.write(0xFF40, 0x91); // LCD on, BG on, BG tile map at 0x9800, tile data at 0x8000
+        // STAT (0xFF41) - LCD Status
+        mmu.write(0xFF41, 0x00);
+        // SCY (0xFF42) - Scroll Y
+        mmu.write(0xFF42, 0x00);
+        // SCX (0xFF43) - Scroll X
+        mmu.write(0xFF43, 0x00);
+        // LY (0xFF44) - LCD Y-Coordinate (read-only)
+        mmu.write(0xFF44, 0x00);
+        // LYC (0xFF45) - LY Compare
+        mmu.write(0xFF45, 0x00);
+        // BGP (0xFF47) - Background Palette
+        mmu.write(0xFF47, 0xE4); // 11 10 01 00 (black, dark gray, light gray, white)
+        // OBP0 (0xFF48) - Object Palette 0
+        mmu.write(0xFF48, 0xE4);
+        // OBP1 (0xFF49) - Object Palette 1
+        mmu.write(0xFF49, 0xE4);
+        // WY (0xFF4A) - Window Y Position
+        mmu.write(0xFF4A, 0x00);
+        // WX (0xFF4B) - Window X Position
+        mmu.write(0xFF4B, 0x00);
     }
 
     CPU::~CPU()
@@ -21,6 +56,7 @@ namespace cpu
     void CPU::run()
     {
         // Main execution loop
+        int frame_count = 0;
         while (true)
         {
             int64_t start = esp_timer_get_time();
@@ -28,7 +64,28 @@ namespace cpu
 
             while (cycles < GB_CYCLES_PER_FRAME)
             {
-                cycles += step();
+                uint8_t cpu_cycles = step();
+                cycles += cpu_cycles;
+
+                // Update PPU with the number of cycles executed
+                ppu.step(cpu_cycles);
+            }
+
+            // Check if a frame is ready to be displayed
+            if (ppu.isFrameReady())
+            {
+                frame_count++;
+                printf("Frame %d completed\n", frame_count);
+
+                // // Export first 10 frames to BMP for testing
+                // if (frame_count <= 10)
+                // {
+                //     char filename[64];
+                //     snprintf(filename, sizeof(filename), "/tmp/frame_%04d.bmp", frame_count);
+                //     ppu.exportToBMP(filename);
+                // }
+                
+                ppu.clearFrameReady();
             }
 
             int64_t elapsed = esp_timer_get_time() - start;
@@ -129,7 +186,7 @@ namespace cpu
         }
         case 0x10: // STOP n8
         {
-            uint8_t n8 = mmu.read(pc++); // Unused operand
+            (void)mmu.read(pc++); // Read and discard operand
             cpu_stopped = true;
             return 8;
         }

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <array>
 #include "memory_bus.hpp"
+#include "ppu.hpp"
 
 namespace cpu
 {
@@ -16,7 +17,7 @@ namespace cpu
     class CPU
     {
     public:
-        CPU();
+        CPU(memory::MemoryBus&, ppu::PPU&);
         ~CPU();
         uint8_t execute(uint8_t);
         uint8_t execute_extended(uint8_t);
@@ -35,7 +36,11 @@ namespace cpu
         uint16_t pc{0};
 
         // Memory bus for accessing ROM, RAM, and I/O
-        memory::MemoryBus mmu;
+        memory::MemoryBus& mmu;
+
+        // Picture Processing Unit for rendering
+        ppu::PPU& ppu;
+
         bool cpu_stopped{false};
         bool ime_enabled{false};
 
