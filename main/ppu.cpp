@@ -11,11 +11,11 @@ namespace ppu
     constexpr uint16_t HBLANK_CYCLES = 204;
     constexpr uint16_t SCANLINE_CYCLES = OAM_SCAN_CYCLES + DRAWING_CYCLES + HBLANK_CYCLES;
     constexpr uint16_t VBLANK_SCANLINES = 10;
-    constexpr uint16_t TOTAL_SCANLINES = LCD_HEIGHT + VBLANK_SCANLINES;
+    constexpr uint16_t TOTAL_SCANLINES = display::LCD_HEIGHT + VBLANK_SCANLINES;
 
-    PPU::PPU(memory::MemoryBus& mmu)
+    PPU::PPU(memory::MemoryBus& mmu, std::unique_ptr<display::Display> display)
         : mmu(mmu), mode(Mode::OAM_SCAN), mode_cycles(0), ly(0), frame_ready(false),
-          window_line_counter(0), visible_sprite_count(0)
+          window_line_counter(0), visible_sprite_count(0), display(std::move(display))
     {
         framebuffer.fill(0);
     }
@@ -60,11 +60,12 @@ namespace ppu
                 mode_cycles -= HBLANK_CYCLES;
                 ly++;
 
-                if (ly >= LCD_HEIGHT)
+                if (ly >= display::LCD_HEIGHT)
                 {
                     // Enter VBlank
                     setMode(Mode::VBLANK);
                     frame_ready = true;
+                    display->renderFrame(framebuffer);
                     window_line_counter = 0;  // Reset window counter at VBlank
                 }
                 else
@@ -117,9 +118,9 @@ namespace ppu
         if ((lcdc & LCDC_BG_WINDOW_ENABLE) == 0)
         {
             // Background disabled, fill with white
-            for (int x = 0; x < LCD_WIDTH; x++)
+            for (int x = 0; x < display::LCD_WIDTH; x++)
             {
-                framebuffer[ly * LCD_WIDTH + x] = static_cast<uint8_t>(Color::WHITE);
+                framebuffer[ly * display::LCD_WIDTH + x] = static_cast<uint8_t>(display::Color::WHITE);
             }
             return;
         }
@@ -141,7 +142,7 @@ namespace ppu
         uint8_t pixel_y = y_pos % TILE_SIZE;
 
         // Render each pixel in the scanline
-        for (int x = 0; x < LCD_WIDTH; x++)
+        for (int x = 0; x < display::LCD_WIDTH; x++)
         {
             // Calculate X position in the 256x256 background map
             uint8_t x_pos = (x + scx) & 0xFF;
@@ -181,7 +182,7 @@ namespace ppu
             uint8_t palette_color = (bgp >> (color_id * 2)) & 0x03;
 
             // Write to framebuffer
-            framebuffer[ly * LCD_WIDTH + x] = palette_color;
+            framebuffer[ly * display::LCD_WIDTH + x] = palette_color;
         }
     }
 
@@ -261,7 +262,7 @@ namespace ppu
         int window_x_start = wx - 7;
 
         // Render window pixels
-        for (int x = 0; x < LCD_WIDTH; x++)
+        for (int x = 0; x < display::LCD_WIDTH; x++)
         {
             // Check if this pixel is within the window area
             if (x < window_x_start)
@@ -305,7 +306,7 @@ namespace ppu
             uint8_t palette_color = (bgp >> (color_id * 2)) & 0x03;
 
             // Write to framebuffer
-            framebuffer[ly * LCD_WIDTH + x] = palette_color;
+            framebuffer[ly * display::LCD_WIDTH + x] = palette_color;
         }
 
         // Increment window line counter (window is being rendered on this scanline)
@@ -411,7 +412,7 @@ namespace ppu
                 int screen_x = sprite_x + x;
 
                 // Skip if off screen
-                if (screen_x < 0 || screen_x >= LCD_WIDTH)
+                if (screen_x < 0 || screen_x >= display::LCD_WIDTH)
                 {
                     continue;
                 }
@@ -432,14 +433,14 @@ namespace ppu
                 uint8_t color_bit_high = (byte2 >> bit_pos) & 1;
                 uint8_t color_id = (color_bit_high << 1) | color_bit_low;
 
-                // Color 0 is transparent for sprites
+                // display::Color 0 is transparent for sprites
                 if (color_id == 0)
                 {
                     continue;
                 }
 
                 // Check priority
-                uint8_t bg_color = framebuffer[ly * LCD_WIDTH + screen_x];
+                uint8_t bg_color = framebuffer[ly * display::LCD_WIDTH + screen_x];
 
                 // If priority flag is set and BG color is not 0, BG has priority
                 if ((sprite.attributes & OAM_PRIORITY) && bg_color != 0)
@@ -451,7 +452,7 @@ namespace ppu
                 uint8_t palette_color = (palette >> (color_id * 2)) & 0x03;
 
                 // Write to framebuffer
-                framebuffer[ly * LCD_WIDTH + screen_x] = palette_color;
+                framebuffer[ly * display::LCD_WIDTH + screen_x] = palette_color;
             }
         }
     }

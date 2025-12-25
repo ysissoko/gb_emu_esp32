@@ -1,7 +1,10 @@
 #pragma once
 
+#include "display.hpp"
+
 #include <cstdint>
 #include <array>
+#include <memory>
 
 namespace memory {
     class MemoryBus;
@@ -10,8 +13,6 @@ namespace memory {
 namespace ppu
 {
     // Game Boy LCD dimensions
-    constexpr int LCD_WIDTH = 160;
-    constexpr int LCD_HEIGHT = 144;
     constexpr int TILE_SIZE = 8;
     constexpr int TILES_PER_ROW = 32;
     constexpr int TILES_PER_COL = 32;
@@ -35,15 +36,6 @@ namespace ppu
         DRAWING = 3
     };
 
-    // Pixel color (Game Boy has 4 shades of gray)
-    enum class Color : uint8_t
-    {
-        WHITE = 0,
-        LIGHT_GRAY = 1,
-        DARK_GRAY = 2,
-        BLACK = 3
-    };
-
     // Sprite OAM entry (4 bytes per sprite)
     struct OAMEntry
     {
@@ -65,14 +57,14 @@ namespace ppu
     class PPU
     {
     public:
-        PPU(memory::MemoryBus&);
+        PPU(memory::MemoryBus&, std::unique_ptr<display::Display>);
         ~PPU();
 
         // Update PPU state for given number of cycles
         void step(uint8_t cycles);
 
         // Get framebuffer pointer for rendering
-        const std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& getFramebuffer() const { return framebuffer; }
+        const std::array<uint8_t, display::LCD_WIDTH * display::LCD_HEIGHT>& getFramebuffer() const { return framebuffer; }
 
         // Get current scanline
         uint8_t getCurrentLine() const { return ly; }
@@ -85,7 +77,7 @@ namespace ppu
         memory::MemoryBus& mmu;
 
         // Framebuffer: each byte represents a pixel (0-3 for the 4 gray shades)
-        std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT> framebuffer;
+        std::array<uint8_t, display::LCD_WIDTH  * display::LCD_HEIGHT> framebuffer;
 
         // PPU state
         Mode mode;
@@ -105,7 +97,9 @@ namespace ppu
         void scanOAM();
         void renderSprites();
         void setMode(Mode new_mode);
-        Color getPixelColor(uint8_t tile_index, uint8_t x, uint8_t y);
+        display::Color getPixelColor(uint8_t tile_index, uint8_t x, uint8_t y);
+
+        std::unique_ptr<display::Display> display{nullptr};
 
         // Register read functions
         uint8_t readLCDC() const;
