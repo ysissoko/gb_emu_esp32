@@ -70,7 +70,7 @@ namespace memory
         void loadROM(const uint8_t* data, size_t size);
 
         // request an interruption
-        inline void request_interrupt(IRQFlag flag) {
+        inline void request_interrupt(IRQFlag flag) const {
             if_register |= (1 << static_cast<uint8_t>(flag));
         }
 

@@ -22,7 +22,7 @@ namespace controller
     class Joypad
     {
     public:
-        Joypad(memory::MemoryBus& mmu) : mmu(mmu)
+        Joypad()
         {
             initialize();
         }
