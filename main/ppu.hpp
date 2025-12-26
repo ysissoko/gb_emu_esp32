@@ -97,6 +97,7 @@ namespace ppu
         void scanOAM();
         void renderSprites();
         void setMode(Mode new_mode);
+        void updateLY(uint8_t new_ly);
         display::Color getPixelColor(uint8_t tile_index, uint8_t x, uint8_t y);
 
         std::unique_ptr<display::Display> display{nullptr};

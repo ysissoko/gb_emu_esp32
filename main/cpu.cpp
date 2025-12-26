@@ -69,6 +69,11 @@ namespace cpu
 
                 // Update PPU with the number of cycles executed
                 ppu.step(cpu_cycles);
+                // todo implement timer
+                // timer.step(cpu_cycles);
+                if (test_interrupts_flags()) {
+                    cycles += INTERRUPT_CYCLES;
+                }
             }
 
             // Check if a frame is ready to be displayed
@@ -76,15 +81,6 @@ namespace cpu
             {
                 frame_count++;
                 printf("Frame %d completed\n", frame_count);
-
-                // // Export first 10 frames to BMP for testing
-                // if (frame_count <= 10)
-                // {
-                //     char filename[64];
-                //     snprintf(filename, sizeof(filename), "/tmp/frame_%04d.bmp", frame_count);
-                //     ppu.exportToBMP(filename);
-                // }
-                
                 ppu.clearFrameReady();
             }
 
@@ -97,10 +93,49 @@ namespace cpu
         }
     }
 
+    bool CPU::test_interrupts_flags() {
+        // interrupt enable read
+        uint8_t ie = mmu.read(memory::IE_REGISTER);
+        // interrupt flag read
+        uint8_t if_ = mmu.read(memory::IF_REGISTER);
+        // pending interrupts calculated from enabled interrupts and currently requested interrupts
+        uint8_t pending = ie & if_;
+
+        // Wake CPU from HALT if any interrupt is pending
+        if (pending != 0) {
+            cpu_stopped = false;
+        }
+
+        // Only service interrupts if IME is enabled
+        if (!ime_enabled || pending == 0)
+            return false;
+
+        for (uint8_t bit_idx=0 ;bit_idx < irq_vec.size(); bit_idx++) {
+            if (pending & (1 << bit_idx)) {
+                ime_enabled = false;
+                // Set the flag to false
+                mmu.write(memory::IF_REGISTER, if_ & ~(1 << bit_idx));
+                // push PC on stack
+                sp--;
+                mmu.write(sp, (pc >> 8) & 0xFF); // MSB
+                sp--;
+                mmu.write(sp, pc & 0xFF); //LSB
+                pc = irq_vec.at(bit_idx);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// @brief step executes a single CPU instruction
     /// @return the number of cycles the instruction took
     uint8_t CPU::step()
     {
+        if (cpu_stopped) {
+            return 4; // HALT consumes cycles but doesn't execute
+        }
+
         uint8_t opcode = mmu.read(pc++);
 
         return execute(opcode);

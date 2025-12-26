@@ -58,12 +58,13 @@ namespace ppu
             if (mode_cycles >= HBLANK_CYCLES)
             {
                 mode_cycles -= HBLANK_CYCLES;
-                ly++;
+                updateLY(ly + 1);
 
                 if (ly >= display::LCD_HEIGHT)
                 {
                     // Enter VBlank
                     setMode(Mode::VBLANK);
+                    mmu.request_interrupt(memory::IRQFlag::IRQ_VBLANK);
                     frame_ready = true;
                     display->renderFrame(framebuffer);
                     window_line_counter = 0;  // Reset window counter at VBlank
@@ -80,12 +81,12 @@ namespace ppu
             if (mode_cycles >= SCANLINE_CYCLES)
             {
                 mode_cycles -= SCANLINE_CYCLES;
-                ly++;
+                updateLY(ly + 1);
 
                 if (ly >= TOTAL_SCANLINES)
                 {
                     // Restart from top
-                    ly = 0;
+                    updateLY(0);
                     setMode(Mode::OAM_SCAN);
                 }
             }
@@ -96,6 +97,56 @@ namespace ppu
     void PPU::setMode(Mode new_mode)
     {
         mode = new_mode;
+
+        // Update STAT register mode bits (bits 0-1)
+        uint8_t stat = mmu.read(0xFF41);
+        stat = (stat & 0xFC) | static_cast<uint8_t>(new_mode);
+        mmu.write(0xFF41, stat);
+
+        // Check if we should request LCD STAT interrupt
+        bool request_stat_int = false;
+
+        switch (new_mode) {
+            case Mode::HBLANK:
+                if (stat & 0x08) request_stat_int = true;  // Bit 3: HBlank interrupt
+                break;
+            case Mode::VBLANK:
+                if (stat & 0x10) request_stat_int = true;  // Bit 4: VBlank interrupt
+                break;
+            case Mode::OAM_SCAN:
+                if (stat & 0x20) request_stat_int = true;  // Bit 5: OAM interrupt
+                break;
+            case Mode::DRAWING:
+                // No interrupt for drawing mode
+                break;
+        }
+
+        if (request_stat_int) {
+            mmu.request_interrupt(memory::IRQFlag::IRQ_LCD_STAT);
+        }
+    }
+
+    void PPU::updateLY(uint8_t new_ly)
+    {
+        ly = new_ly;
+        mmu.write(0xFF44, ly);  // Update LY register
+
+        // Check LYC=LY coincidence
+        uint8_t lyc = mmu.read(0xFF45);  // LYC register
+        uint8_t stat = mmu.read(0xFF41);
+
+        if (ly == lyc) {
+            stat |= 0x04;  // Set coincidence flag (bit 2)
+
+            // Request interrupt if LYC=LY interrupt is enabled (bit 6)
+            if (stat & 0x40) {
+                mmu.request_interrupt(memory::IRQFlag::IRQ_LCD_STAT);
+            }
+        } else {
+            stat &= ~0x04;  // Clear coincidence flag
+        }
+
+        mmu.write(0xFF41, stat);
     }
 
     void PPU::renderScanline()

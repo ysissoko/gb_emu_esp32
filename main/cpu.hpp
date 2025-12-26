@@ -13,6 +13,9 @@ namespace cpu
     constexpr uint16_t C_FLAG_MASK = 0x10;
     constexpr int GB_CYCLES_PER_FRAME = 70224;
     constexpr int64_t FRAME_US = 16743; // ~16.743 ms
+    constexpr uint8_t INTERRUPT_CYCLES = 20;
+    // interrupt request vector
+    constexpr const std::array<uint16_t, 5> irq_vec = {0x40, 0x48, 0x50, 0x58, 0x60};
 
     class CPU
     {
@@ -48,6 +51,8 @@ namespace cpu
         bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };
         bool readHFlag() const { return (f & H_FLAG_MASK) != 0; };
         bool readCFlag() const { return (f & C_FLAG_MASK) != 0; };
+
+        bool test_interrupts_flags();
 
         void setZFlag(bool value) {
             if (value) {

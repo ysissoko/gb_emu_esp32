@@ -22,17 +22,17 @@ namespace controller
     class Joypad
     {
     public:
-        Joypad()
+        Joypad(memory::MemoryBus& mmu) : mmu(mmu)
         {
             initialize();
         }
 
         uint8_t read(uint8_t joyp_select)
         {
-            uint8_t res = joyp_select | 0xC0; // bits 7-6 à 1
-            res |= 0x0F;                      // bits boutons à 1 (relâchés)
+            uint8_t res = joyp_select | 0xC0; // bits 7-6 to HIGH (joypad selection multiplexer)
+            res |= 0x0F;                      // bits set to HIGH (relâchés)
 
-            // Directions sélectionnées ? (P14 = 0)
+            // Directions selected (P14 = 0)
             if (!(joyp_select & (1 << 4)))
             {
                 if (pressed(BTN_RIGHT))
@@ -45,7 +45,7 @@ namespace controller
                     res &= ~(1 << 3);
             }
 
-            // Boutons sélectionnés ? (P15 = 0)
+            // Other buttons (A, B, START, SELECT) (P15 = 0)
             if (!(joyp_select & (1 << 5)))
             {
                 if (pressed(BTN_A))
@@ -62,6 +62,7 @@ namespace controller
         }
 
     private:
+    
         void initialize()
         {
             gpio_config_t cfg{};
@@ -81,7 +82,6 @@ namespace controller
 
             gpio_config(&cfg);
 
-            // Initialiser les temps de dernière lecture
             for (int i = 0; i < 8; i++)
             {
                 last_press_time[i] = 0;
@@ -105,7 +105,7 @@ namespace controller
         {
             uint8_t idx = get_button_index(pin);
 
-            // Vérifier l'état physique du bouton (actif bas)
+            // Verify button state (release or press)
             if (gpio_get_level(pin) == 0)
             {
                 int64_t now = esp_timer_get_time() / 1000; // Convertir µs en ms
@@ -126,7 +126,8 @@ namespace controller
             return false; // Bouton relâché
         }
 
-        // Tableau statique pour stocker le dernier temps de pression de chaque bouton
+        // Array to store the latest press time of button matrix
         int64_t last_press_time[8];
+        uint8_t prev_buttons_state{0x0F}; // all buttons are released by default
     };
 }

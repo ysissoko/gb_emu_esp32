@@ -27,10 +27,21 @@ namespace memory
     constexpr uint16_t UNUSABLE_START = 0xFEA0;
     constexpr uint16_t UNUSABLE_END = 0xFEFF;
     constexpr uint16_t IO_REGISTERS_START = 0xFF00;
+    constexpr uint16_t IF_REGISTER = 0xFF0F;
     constexpr uint16_t IO_REGISTERS_END = 0xFF7F;
     constexpr uint16_t HRAM_START = 0xFF80;
     constexpr uint16_t HRAM_END = 0xFFFE;
     constexpr uint16_t IE_REGISTER = 0xFFFF;
+
+    // Interrupt Request Flag
+
+    enum class IRQFlag {
+        IRQ_VBLANK,
+        IRQ_LCD_STAT,
+        IRQ_TIMER,
+        IRQ_SERIAL,
+        IRQ_JOYP
+    };
 
     class MemoryBus
     {
@@ -48,6 +59,11 @@ namespace memory
 
         // Load ROM into memory
         void loadROM(const uint8_t* data, size_t size);
+
+        // request an interruption
+        inline void request_interrupt(IRQFlag flag) {
+            if_register |= (1 << static_cast<uint8_t>(flag));
+        }
 
     private:
         // ROM - 32KB (0x0000-0x7FFF)
@@ -73,6 +89,13 @@ namespace memory
 
         // Interrupt Enable register - 1 byte (0xFFFF)
         uint8_t ie_register;
+
+        // Interrupt Flag Register - 1 byte (0xFF0F)
+        // Mutable because reading joypad can trigger interrupt (hardware side-effect)
+        mutable uint8_t if_register;
+
+        // Previous joypad state for detecting button transitions
+        mutable uint8_t prev_joypad_state;
 
         // Physical controller button handling
         std::unique_ptr<controller::Joypad> joypad{nullptr};

@@ -5,7 +5,8 @@ namespace memory
 {
     MemoryBus::MemoryBus(std::unique_ptr<controller::Joypad> joypad)
         : rom{0}, vram{0}, external_ram{0}, wram{0},
-          oam{0}, io_registers{0}, hram{0}, ie_register{0}, joypad{std::move(joypad)}
+          oam{0}, io_registers{0}, hram{0}, ie_register{0}, if_register{0},
+          prev_joypad_state{0xFF}, joypad{std::move(joypad)}
     {
         // Initialize memory
     }
@@ -57,11 +58,33 @@ namespace memory
         {
             return 0xFF; // Returns 0xFF for unusable memory
         } 
-        else if (address == IO_REGISTERS_START) 
+        else if (address == IO_REGISTERS_START)
         {
-            return joypad->read(io_registers[0]);
+            uint8_t current_state = joypad->read(io_registers[0]);
+
+            // Detect button press transitions for joypad interrupt
+            // Buttons are active low, so we invert to get pressed state
+            uint8_t current_pressed = (~current_state) & 0x0F;
+            uint8_t prev_pressed = (~prev_joypad_state) & 0x0F;
+
+            // Detect new button presses (transition from released to pressed)
+            uint8_t new_presses = current_pressed & ~prev_pressed;
+
+            // Request interrupt if any button was newly pressed
+            if (new_presses != 0) {
+                request_interrupt(IRQFlag::IRQ_JOYP);
+            }
+
+            prev_joypad_state = current_state;
+
+            return current_state;
         }
-        // I/O Registers (0xFF00-0xFF7F)
+        // Interrupt Flag Register (0xFF0F)
+        else if (address == IF_REGISTER)
+        {
+            return if_register;
+        }
+        // I/O Registers (0xFF01-0xFF0E, 0xFF10-0xFF7F)
         else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             return io_registers[address - IO_REGISTERS_START];
@@ -126,7 +149,12 @@ namespace memory
             // Forcer les bits 7-6 à 1 (requis par le spec Game Boy)
             io_registers[0] = (value & 0x30) | 0xC0;
         }
-        // I/O Registers (0xFF01-0xFF7F)
+        // Interrupt Flag Register (0xFF0F)
+        else if (address == IF_REGISTER)
+        {
+            if_register = value;
+        }
+        // I/O Registers (0xFF01-0xFF0E, 0xFF10-0xFF7F)
         else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             io_registers[address - IO_REGISTERS_START] = value;
