@@ -7,6 +7,10 @@
 #include <array>
 #include <memory>
 
+namespace timer {
+    class Timer;
+}
+
 namespace memory
 {
     // Game Boy memory map
@@ -65,6 +69,9 @@ namespace memory
             if_register |= (1 << static_cast<uint8_t>(flag));
         }
 
+        // Step timer for given number of cycles
+        void stepTimer(uint8_t cycles);
+
     private:
         // ROM - 32KB (0x0000-0x7FFF)
         std::array<uint8_t, 0x8000> rom;
@@ -99,5 +106,8 @@ namespace memory
 
         // Physical controller button handling
         std::unique_ptr<controller::Joypad> joypad{nullptr};
+
+        // Timer for game timing
+        std::unique_ptr<timer::Timer> timer{nullptr};
     };
 }

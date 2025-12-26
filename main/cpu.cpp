@@ -69,8 +69,8 @@ namespace cpu
 
                 // Update PPU with the number of cycles executed
                 ppu.step(cpu_cycles);
-                // todo implement timer
-                // timer.step(cpu_cycles);
+                // Update Timer with the number of cycles executed
+                mmu.stepTimer(cpu_cycles);
                 if (test_interrupts_flags()) {
                     cycles += INTERRUPT_CYCLES;
                 }

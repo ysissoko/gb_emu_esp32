@@ -1,4 +1,5 @@
 #include "memory_bus.hpp"
+#include "timer.hpp"
 #include <cstring>
 
 namespace memory
@@ -8,7 +9,8 @@ namespace memory
           oam{0}, io_registers{0}, hram{0}, ie_register{0}, if_register{0},
           prev_joypad_state{0xFF}, joypad{std::move(joypad)}
     {
-        // Initialize memory
+        // Initialize timer (must be after member initialization)
+        timer = std::make_unique<timer::Timer>(*this);
     }
 
     MemoryBus::~MemoryBus()
@@ -84,7 +86,24 @@ namespace memory
         {
             return if_register;
         }
-        // I/O Registers (0xFF01-0xFF0E, 0xFF10-0xFF7F)
+        // Timer registers (0xFF04-0xFF07)
+        else if (address == timer::DIV_REGISTER)
+        {
+            return timer->readDIV();
+        }
+        else if (address == timer::TIMA_REGISTER)
+        {
+            return timer->readTIMA();
+        }
+        else if (address == timer::TMA_REGISTER)
+        {
+            return timer->readTMA();
+        }
+        else if (address == timer::TAC_REGISTER)
+        {
+            return timer->readTAC();
+        }
+        // I/O Registers (0xFF01-0xFF03, 0xFF08-0xFF0E, 0xFF10-0xFF7F)
         else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             return io_registers[address - IO_REGISTERS_START];
@@ -154,11 +173,28 @@ namespace memory
         {
             if_register = value;
         }
-        // I/O Registers (0xFF01-0xFF0E, 0xFF10-0xFF7F)
+        // Timer registers (0xFF04-0xFF07)
+        else if (address == timer::DIV_REGISTER)
+        {
+            timer->writeDIV(value);
+        }
+        else if (address == timer::TIMA_REGISTER)
+        {
+            timer->writeTIMA(value);
+        }
+        else if (address == timer::TMA_REGISTER)
+        {
+            timer->writeTMA(value);
+        }
+        else if (address == timer::TAC_REGISTER)
+        {
+            timer->writeTAC(value);
+        }
+        // I/O Registers (0xFF01-0xFF03, 0xFF08-0xFF0E, 0xFF10-0xFF7F)
         else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             io_registers[address - IO_REGISTERS_START] = value;
-            // TODO: Handle special I/O register side effects (DMA, timer, etc.)
+            // TODO: Handle special I/O register side effects (DMA, etc.)
         }
         // High RAM (0xFF80-0xFFFE)
         else if (address >= HRAM_START && address <= HRAM_END)
@@ -193,5 +229,13 @@ namespace memory
     {
         size_t copy_size = (size > rom.size()) ? rom.size() : size;
         std::memcpy(rom.data(), data, copy_size);
+    }
+
+    void MemoryBus::stepTimer(uint8_t cycles)
+    {
+        if (timer)
+        {
+            timer->step(cycles);
+        }
     }
 }
