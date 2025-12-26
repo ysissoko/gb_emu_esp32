@@ -6,9 +6,14 @@
 #include <cstddef>
 #include <array>
 #include <memory>
+#include <string>
 
 namespace timer {
     class Timer;
+}
+
+namespace serial {
+    class Serial;
 }
 
 namespace memory
@@ -72,6 +77,10 @@ namespace memory
         // Step timer for given number of cycles
         void stepTimer(uint8_t cycles);
 
+        // Get serial debug output
+        std::string getSerialDebugOutput() const;
+        void clearSerialDebugOutput();
+
     private:
         // ROM - 32KB (0x0000-0x7FFF)
         std::array<uint8_t, 0x8000> rom;
@@ -109,5 +118,8 @@ namespace memory
 
         // Timer for game timing
         std::unique_ptr<timer::Timer> timer{nullptr};
+
+        // Serial port for debugging
+        std::unique_ptr<serial::Serial> serial{nullptr};
     };
 }

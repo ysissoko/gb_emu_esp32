@@ -1,5 +1,6 @@
 #include "memory_bus.hpp"
 #include "timer.hpp"
+#include "serial.hpp"
 #include <cstring>
 
 namespace memory
@@ -11,6 +12,8 @@ namespace memory
     {
         // Initialize timer (must be after member initialization)
         timer = std::make_unique<timer::Timer>(*this);
+        // Initialize serial port
+        serial = std::make_unique<serial::Serial>(*this);
     }
 
     MemoryBus::~MemoryBus()
@@ -86,6 +89,15 @@ namespace memory
         {
             return if_register;
         }
+        // Serial registers (0xFF01-0xFF02)
+        else if (address == serial::SB_REGISTER)
+        {
+            return serial->readSB();
+        }
+        else if (address == serial::SC_REGISTER)
+        {
+            return serial->readSC();
+        }
         // Timer registers (0xFF04-0xFF07)
         else if (address == timer::DIV_REGISTER)
         {
@@ -103,7 +115,7 @@ namespace memory
         {
             return timer->readTAC();
         }
-        // I/O Registers (0xFF01-0xFF03, 0xFF08-0xFF0E, 0xFF10-0xFF7F)
+        // I/O Registers (0xFF03, 0xFF08-0xFF0E, 0xFF10-0xFF7F)
         else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             return io_registers[address - IO_REGISTERS_START];
@@ -173,6 +185,15 @@ namespace memory
         {
             if_register = value;
         }
+        // Serial registers (0xFF01-0xFF02)
+        else if (address == serial::SB_REGISTER)
+        {
+            serial->writeSB(value);
+        }
+        else if (address == serial::SC_REGISTER)
+        {
+            serial->writeSC(value);
+        }
         // Timer registers (0xFF04-0xFF07)
         else if (address == timer::DIV_REGISTER)
         {
@@ -190,7 +211,7 @@ namespace memory
         {
             timer->writeTAC(value);
         }
-        // I/O Registers (0xFF01-0xFF03, 0xFF08-0xFF0E, 0xFF10-0xFF7F)
+        // I/O Registers (0xFF03, 0xFF08-0xFF0E, 0xFF10-0xFF7F)
         else if (address > IO_REGISTERS_START && address <= IO_REGISTERS_END)
         {
             io_registers[address - IO_REGISTERS_START] = value;
@@ -236,6 +257,23 @@ namespace memory
         if (timer)
         {
             timer->step(cycles);
+        }
+    }
+
+    std::string MemoryBus::getSerialDebugOutput() const
+    {
+        if (serial)
+        {
+            return serial->getDebugOutput();
+        }
+        return "";
+    }
+
+    void MemoryBus::clearSerialDebugOutput()
+    {
+        if (serial)
+        {
+            serial->clearDebugOutput();
         }
     }
 }
