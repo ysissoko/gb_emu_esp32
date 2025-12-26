@@ -80,7 +80,6 @@ namespace cpu
             if (ppu.isFrameReady())
             {
                 frame_count++;
-                printf("Frame %d completed\n", frame_count);
                 ppu.clearFrameReady();
             }
 

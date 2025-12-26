@@ -4,22 +4,15 @@
 #include "esp_lcd_panel_io.h"
 #include "driver/spi_master.h"
 
-namespace ppu::display
+namespace display
 {
-    static uint16_t getColorFromPalette(display::Color c) {
-        switch(c) {
-            case display::Color::WHITE:
-            return 0xFFFF;
-            case display::Color::LIGHT_GRAY:
-            return 0xC618;
-            case display::Color::DARK_GRAY:
-            return 0x632C;
-            case display::Color::BLACK:
-            return 0x0000;
-        }
-        
-        return 0xFFFF;
-    }
+    // Optimized: Use constexpr lookup table instead of switch
+    static constexpr uint16_t COLOR_PALETTE[4] = {
+        0xFFFF,  // WHITE
+        0xC618,  // LIGHT_GRAY
+        0x632C,  // DARK_GRAY
+        0x0000   // BLACK
+    };
 
     void LCDDisplay::initialize()
     {
@@ -55,13 +48,12 @@ namespace ppu::display
         esp_lcd_panel_disp_on_off(panel, true);
     }
 
-    void LCDDisplay::renderFrame(std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT> frameBuffer)
+    void LCDDisplay::renderFrame(const std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& frameBuffer)
     {
-        buf.fill(0);
-
-        // convert the frame buffer to RGB565
-        for (size_t i=0; i< frameBuffer.size(); ++i) {
-            buf[i] = getColorFromPalette(static_cast<ppu::display::Color>(frameBuffer[i] & 0x3));
+        // Optimized: Removed unnecessary buf.fill(0) - all pixels are overwritten anyway
+        // Optimized: Direct palette lookup instead of function call + switch
+        for (size_t i = 0; i < frameBuffer.size(); ++i) {
+            buf[i] = COLOR_PALETTE[frameBuffer[i] & 0x3];
         }
 
         esp_lcd_panel_draw_bitmap(panel, 0, 0, 240, 240, buf.data());

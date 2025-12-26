@@ -1,12 +1,14 @@
 #pragma once
 
-#include "joypad.hpp"
-
 #include <cstdint>
 #include <cstddef>
 #include <array>
 #include <memory>
 #include <string>
+
+namespace controller {
+    class Joypad;
+}
 
 namespace timer {
     class Timer;
@@ -55,7 +57,7 @@ namespace memory
     class MemoryBus
     {
     public:
-        MemoryBus(std::unique_ptr<controller::Joypad>);
+        MemoryBus(const std::shared_ptr<controller::Joypad>&);
         ~MemoryBus();
 
         // 8-bit read/write operations
@@ -114,7 +116,7 @@ namespace memory
         mutable uint8_t prev_joypad_state;
 
         // Physical controller button handling
-        std::unique_ptr<controller::Joypad> joypad{nullptr};
+        std::shared_ptr<controller::Joypad> joypad{nullptr};
 
         // Timer for game timing
         std::unique_ptr<timer::Timer> timer{nullptr};

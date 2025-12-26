@@ -189,16 +189,18 @@ namespace ppu
 
         // Calculate Y position in the 256x256 background map
         uint8_t y_pos = (ly + scy) & 0xFF;
-        uint8_t tile_y = y_pos / TILE_SIZE;
-        uint8_t pixel_y = y_pos % TILE_SIZE;
+        // Optimized: Use bitwise operations (TILE_SIZE = 8)
+        uint8_t tile_y = y_pos >> 3;     // Division by 8
+        uint8_t pixel_y = y_pos & 0x7;   // Modulo 8
 
         // Render each pixel in the scanline
         for (int x = 0; x < display::LCD_WIDTH; x++)
         {
             // Calculate X position in the 256x256 background map
             uint8_t x_pos = (x + scx) & 0xFF;
-            uint8_t tile_x = x_pos / TILE_SIZE;
-            uint8_t pixel_x = x_pos % TILE_SIZE;
+            // Optimized: Use bitwise operations
+            uint8_t tile_x = x_pos >> 3;     // Division by 8
+            uint8_t pixel_x = x_pos & 0x7;   // Modulo 8
 
             // Get tile index from tile map
             uint16_t tile_map_addr = tile_map_base + (tile_y * TILES_PER_ROW) + tile_x;
@@ -306,8 +308,9 @@ namespace ppu
         uint16_t tile_data_base = use_signed_tiles ? 0x9000 : 0x8000;
 
         // Calculate tile Y based on window internal line counter
-        uint8_t tile_y = window_line_counter / TILE_SIZE;
-        uint8_t pixel_y = window_line_counter % TILE_SIZE;
+        // Optimized: Use bitwise operations
+        uint8_t tile_y = window_line_counter >> 3;    // Division by 8
+        uint8_t pixel_y = window_line_counter & 0x7;  // Modulo 8
 
         // WX is offset by 7, so actual X start is WX - 7
         int window_x_start = wx - 7;
@@ -323,8 +326,9 @@ namespace ppu
 
             // Calculate position in window
             int window_x = x - window_x_start;
-            uint8_t tile_x = window_x / TILE_SIZE;
-            uint8_t pixel_x = window_x % TILE_SIZE;
+            // Optimized: Use bitwise operations
+            uint8_t tile_x = window_x >> 3;     // Division by 8
+            uint8_t pixel_x = window_x & 0x7;   // Modulo 8
 
             // Get tile index from tile map
             uint16_t tile_map_addr = tile_map_base + (tile_y * TILES_PER_ROW) + tile_x;

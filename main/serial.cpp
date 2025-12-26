@@ -38,10 +38,6 @@ namespace serial
         // Accumulate for later retrieval
         debug_output += c;
 
-        // Also print to console for immediate feedback
-        std::printf("%c", c);
-        std::fflush(stdout);
-
         // Transfer complete: clear bit 7 and request interrupt
         sc_register &= ~SC_TRANSFER_START;
         mmu.request_interrupt(memory::IRQFlag::IRQ_SERIAL);

@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-namespace ppu::display
+namespace display
 {
     constexpr int LCD_WIDTH = 160;
     constexpr int LCD_HEIGHT = 144;
@@ -22,7 +22,7 @@ namespace ppu::display
     {
     public:
         virtual void initialize() = 0;
-        virtual void renderFrame(std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT> frameBuffer) = 0;
+        virtual void renderFrame(const std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& frameBuffer) = 0;
         virtual ~Display() {};
     };
 }

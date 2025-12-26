@@ -1,7 +1,5 @@
 #pragma once
 
-#include "memory_bus.hpp"
-
 #include "driver/gpio.h"
 #include "esp_timer.h"
 
@@ -35,32 +33,65 @@ namespace controller
             // Directions selected (P14 = 0)
             if (!(joyp_select & (1 << 4)))
             {
-                if (pressed(BTN_RIGHT))
+                if (buttonRightPressed())
                     res &= ~(1 << 0);
-                if (pressed(BTN_LEFT))
+                if (buttonLeftPressed())
                     res &= ~(1 << 1);
-                if (pressed(BTN_UP))
+                if (buttonUpPressed())
                     res &= ~(1 << 2);
-                if (pressed(BTN_DOWN))
+                if (buttonDownPressed())
                     res &= ~(1 << 3);
             }
 
             // Other buttons (A, B, START, SELECT) (P15 = 0)
             if (!(joyp_select & (1 << 5)))
             {
-                if (pressed(BTN_A))
+                if (buttonAPressed())
                     res &= ~(1 << 0);
-                if (pressed(BTN_B))
+                if (buttonBPressed())
                     res &= ~(1 << 1);
-                if (pressed(BTN_SELECT))
+                if (buttonSelectPressed())
                     res &= ~(1 << 2);
-                if (pressed(BTN_START))
+                if (buttonStartPressed())
                     res &= ~(1 << 3);
             }
 
             return res;
         }
 
+        inline bool pressed(gpio_num_t pin)
+        {
+            uint8_t idx = get_button_index(pin);
+
+            // Verify button state (release or press)
+            if (gpio_get_level(pin) == 0)
+            {
+                int64_t now = esp_timer_get_time() / 1000; // Convertir µs en ms
+                int64_t last_time = last_press_time[idx];
+
+                // Debouncing: accepter seulement si 20ms se sont écoulées
+                if (now - last_time > 20)
+                {
+                    last_press_time[idx] = now;
+                    return true;
+                }
+
+                // Bouton pressé mais dans la période de debounce
+                // Retourner l'état précédent (pressé)
+                return (now - last_time <= 100); // Rester pressé jusqu'à 100ms max
+            }
+
+            return false; // Bouton relâché
+        }
+
+        inline bool buttonAPressed () { return pressed(controller::BTN_A); }
+        inline bool buttonBPressed () { return pressed(controller::BTN_B); }
+        inline bool buttonSelectPressed () { return pressed(controller::BTN_SELECT); }
+        inline bool buttonStartPressed () { return pressed(controller::BTN_START); }
+        inline bool buttonUpPressed () { return pressed(controller::BTN_UP); }
+        inline bool buttonDownPressed () { return pressed(controller::BTN_DOWN); }
+        inline bool buttonLeftPressed () { return pressed(controller::BTN_LEFT); }
+        inline bool buttonRightPressed () { return pressed(controller::BTN_RIGHT); }
     private:
     
         void initialize()
@@ -99,31 +130,6 @@ namespace controller
             if (pin == BTN_SELECT) return 6;
             if (pin == BTN_START) return 7;
             return 0;
-        }
-
-        inline bool pressed(gpio_num_t pin)
-        {
-            uint8_t idx = get_button_index(pin);
-
-            // Verify button state (release or press)
-            if (gpio_get_level(pin) == 0)
-            {
-                int64_t now = esp_timer_get_time() / 1000; // Convertir µs en ms
-                int64_t last_time = last_press_time[idx];
-
-                // Debouncing: accepter seulement si 20ms se sont écoulées
-                if (now - last_time > 20)
-                {
-                    last_press_time[idx] = now;
-                    return true;
-                }
-
-                // Bouton pressé mais dans la période de debounce
-                // Retourner l'état précédent (pressé)
-                return (now - last_time <= 100); // Rester pressé jusqu'à 100ms max
-            }
-
-            return false; // Bouton relâché
         }
 
         // Array to store the latest press time of button matrix
