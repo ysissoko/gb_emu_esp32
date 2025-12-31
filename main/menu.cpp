@@ -9,6 +9,7 @@ namespace display::menu {
 
 std::string Menu::loop() {
     // Load ROM list from storage
+    ESP_LOGI(TAG, "About to call storage.list_roms()...");
     rom_count = storage.list_roms(roms_names_list);
 
     if (rom_count <= 0) {
@@ -20,13 +21,36 @@ std::string Menu::loop() {
 
     // Main menu loop
     rom_selected = false;
+    ESP_LOGI(TAG, "Entering menu loop...");
+
+    int loop_count = 0;
     while (!rom_selected) {
+        if (loop_count == 0) {
+            ESP_LOGI(TAG, "First iteration of menu loop");
+        }
+
         handleInputs();
+
+        if (loop_count == 0) {
+            ESP_LOGI(TAG, "After handleInputs()");
+        }
+
         draw();
+
+        if (loop_count == 0) {
+            ESP_LOGI(TAG, "After draw(), entering wait...");
+        }
 
         // Small delay to avoid busy-waiting
         vTaskDelay(pdMS_TO_TICKS(50));
+
+        loop_count++;
+        if (loop_count % 20 == 0) {
+            ESP_LOGI(TAG, "Menu loop iteration %d", loop_count);
+        }
     }
+
+    ESP_LOGI(TAG, "Exited menu loop");
 
     // Return the full path to the selected ROM
     std::string selected_rom_path = storage.get_mount_path() + "/" +
@@ -65,6 +89,12 @@ void Menu::handleInputs() {
 }
 
 void Menu::draw() {
+    static bool first_call = true;
+    if (first_call) {
+        ESP_LOGI(TAG, "draw() called for the first time");
+        first_call = false;
+    }
+
     // Clear framebuffer
     clear_framebuffer(framebuffer, COLOR_BLACK);
 
@@ -125,7 +155,19 @@ void Menu::draw() {
     }
 
     // Render the framebuffer to the LCD display
+    static bool first_render = true;
+    if (first_render) {
+        ESP_LOGI(TAG, "About to call display.renderFrame()...");
+        first_render = false;
+    }
+
     display.renderFrame(framebuffer);
+
+    static bool first_render_complete = true;
+    if (first_render_complete) {
+        ESP_LOGI(TAG, "display.renderFrame() completed");
+        first_render_complete = false;
+    }
 }
 
 } // namespace display::menu

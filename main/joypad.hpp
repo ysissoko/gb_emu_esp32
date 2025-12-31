@@ -7,15 +7,18 @@
 
 namespace controller
 {
-    constexpr gpio_num_t BTN_RIGHT = GPIO_NUM_25;
-    constexpr gpio_num_t BTN_LEFT = GPIO_NUM_26;
-    constexpr gpio_num_t BTN_UP = GPIO_NUM_27;
-    constexpr gpio_num_t BTN_DOWN = GPIO_NUM_32;
+    // ESP32-S3 compatible GPIO mapping
+    // Directions
+    constexpr gpio_num_t BTN_RIGHT = GPIO_NUM_1;
+    constexpr gpio_num_t BTN_LEFT = GPIO_NUM_2;
+    constexpr gpio_num_t BTN_UP = GPIO_NUM_3;
+    constexpr gpio_num_t BTN_DOWN = GPIO_NUM_4;
 
-    constexpr gpio_num_t BTN_A = GPIO_NUM_33;
-    constexpr gpio_num_t BTN_B = GPIO_NUM_12;
-    constexpr gpio_num_t BTN_SELECT = GPIO_NUM_13;
-    constexpr gpio_num_t BTN_START = GPIO_NUM_14;
+    // Action buttons
+    constexpr gpio_num_t BTN_A = GPIO_NUM_5;
+    constexpr gpio_num_t BTN_B = GPIO_NUM_6;
+    constexpr gpio_num_t BTN_SELECT = GPIO_NUM_7;
+    constexpr gpio_num_t BTN_START = GPIO_NUM_15;
 
     class Joypad
     {

@@ -4,8 +4,10 @@
 #include <array>
 #include <cstdint>
 #include "esp_err.h"
+#include "driver/gpio.h"
 
 namespace storage {
+    constexpr const gpio_num_t SD_GPIO_CS = GPIO_NUM_10;
     constexpr const uint8_t MAX_CHARS_ROM_NAME = 48;
     constexpr size_t MAX_ROMS = 64;
     constexpr const char* ROMS_PATH = "roms";

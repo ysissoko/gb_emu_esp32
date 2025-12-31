@@ -89,6 +89,8 @@ namespace cpu
             {
                 esp_rom_delay_us(FRAME_US - elapsed);
             }
+
+            vTaskDelay(1);
         }
     }
 
