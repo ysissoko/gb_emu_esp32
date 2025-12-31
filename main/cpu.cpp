@@ -3,12 +3,22 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 
 #include <cstdio>
+
+// Disable logging in CPU for maximum performance
+#undef ESP_LOGI
+#undef ESP_LOGW
+#undef ESP_LOGE
+#define ESP_LOGI(tag, fmt, ...) do {} while(0)
+#define ESP_LOGW(tag, fmt, ...) do {} while(0)
+#define ESP_LOGE(tag, fmt, ...) do {} while(0)
+
 namespace cpu
 {
 
-    CPU::CPU(memory::MemoryBus& mmu, ppu::PPU& ppu) : mmu(mmu), ppu(ppu)
+    CPU::CPU(memory::MemoryBus &mmu, ppu::PPU &ppu) : mmu(mmu), ppu(ppu)
     {
         // Initialize registers
         a = 0x01;
@@ -21,7 +31,7 @@ namespace cpu
         l = 0x4D;
         sp = 0xFFFE;
         pc = 0x0100; // Start execution at 0x0100
-        
+
         // Initialize LCD registers with default values
         // LCDC (0xFF40) - LCD Control
         mmu.write(0xFF40, 0x91); // LCD on, BG on, BG tile map at 0x9800, tile data at 0x8000
@@ -53,48 +63,68 @@ namespace cpu
     }
 
     /// @brief run starts the CPU execution loop
-    void CPU::run()
+    void CPU::run_frame()
     {
-        // Main execution loop
-        int frame_count = 0;
-        while (true)
+        int cycles = 0;
+        int cycles_since_yield = 0;
+        // Yields moins fréquents maintenant que nous sommes sur CPU 1
+        // Trop de yields = overhead des context switches
+        const int YIELD_THRESHOLD = 6000; // ~4ms, environ 3 yields par frame
+
+        // Profiling détaillé (activé tous les 60 frames)
+        static int frame_prof = 0;
+        frame_prof++;
+        bool do_profile = (frame_prof % 60 == 0);
+
+        int64_t time_cpu = 0, time_ppu = 0, time_timer = 0, time_irq = 0;
+        int64_t t_start, t_end;
+
+        while (cycles < GB_CYCLES_PER_FRAME)
         {
-            int64_t start = esp_timer_get_time();
-            int cycles = 0;
+            if (do_profile) t_start = esp_timer_get_time();
+            uint8_t cpu_cycles = step();
+            if (do_profile) { t_end = esp_timer_get_time(); time_cpu += (t_end - t_start); }
 
-            while (cycles < GB_CYCLES_PER_FRAME)
+            cycles += cpu_cycles;
+            cycles_since_yield += cpu_cycles;
+
+            if (do_profile) t_start = esp_timer_get_time();
+            ppu.step(cpu_cycles);
+            if (do_profile) { t_end = esp_timer_get_time(); time_ppu += (t_end - t_start); }
+
+            if (do_profile) t_start = esp_timer_get_time();
+            mmu.stepTimer(cpu_cycles);
+            if (do_profile) { t_end = esp_timer_get_time(); time_timer += (t_end - t_start); }
+
+            if (do_profile) t_start = esp_timer_get_time();
+            if (test_interrupts_flags())
             {
-                uint8_t cpu_cycles = step();
-                cycles += cpu_cycles;
-
-                // Update PPU with the number of cycles executed
-                ppu.step(cpu_cycles);
-                // Update Timer with the number of cycles executed
-                mmu.stepTimer(cpu_cycles);
-                if (test_interrupts_flags()) {
-                    cycles += INTERRUPT_CYCLES;
-                }
+                cycles += INTERRUPT_CYCLES;
+                cycles_since_yield += INTERRUPT_CYCLES;
             }
+            if (do_profile) { t_end = esp_timer_get_time(); time_irq += (t_end - t_start); }
 
-            // Check if a frame is ready to be displayed
-            if (ppu.isFrameReady())
+            // Yield périodiquement pour la stabilité sans trop d'overhead
+            if (cycles_since_yield >= YIELD_THRESHOLD)
             {
-                frame_count++;
-                ppu.clearFrameReady();
+                taskYIELD();
+                cycles_since_yield = 0;
             }
+        }
 
-            int64_t elapsed = esp_timer_get_time() - start;
-            // Frame timing control to maintain ~60 FPS
-            if (elapsed < FRAME_US)
-            {
-                esp_rom_delay_us(FRAME_US - elapsed);
-            }
+        if (do_profile) {
+            ESP_LOGI("CPU_PROF", "CPU: %lld us | PPU: %lld us | Timer: %lld us | IRQ: %lld us | Total: %lld us",
+                     time_cpu, time_ppu, time_timer, time_irq, time_cpu + time_ppu + time_timer + time_irq);
+        }
 
-            vTaskDelay(1);
+        if (ppu.isFrameReady())
+        {
+            ppu.clearFrameReady();
         }
     }
 
-    bool CPU::test_interrupts_flags() {
+    bool CPU::test_interrupts_flags()
+    {
         // interrupt enable read
         uint8_t ie = mmu.read(memory::IE_REGISTER);
         // interrupt flag read
@@ -102,17 +132,20 @@ namespace cpu
         // pending interrupts calculated from enabled interrupts and currently requested interrupts
         uint8_t pending = ie & if_;
 
-        // Wake CPU from HALT if any interrupt is pending
-        if (pending != 0) {
+        // Wake CPU from HALT if any interrupt is pending (rare)
+        if (UNLIKELY(pending != 0))
+        {
             cpu_stopped = false;
         }
 
-        // Only service interrupts if IME is enabled
-        if (!ime_enabled || pending == 0)
+        // Only service interrupts if IME is enabled (interrupts are rare)
+        if (LIKELY(!ime_enabled || pending == 0))
             return false;
 
-        for (uint8_t bit_idx=0 ;bit_idx < irq_vec.size(); bit_idx++) {
-            if (pending & (1 << bit_idx)) {
+        for (uint8_t bit_idx = 0; bit_idx < irq_vec.size(); bit_idx++)
+        {
+            if (pending & (1 << bit_idx))
+            {
                 ime_enabled = false;
                 // Set the flag to false
                 mmu.write(memory::IF_REGISTER, if_ & ~(1 << bit_idx));
@@ -120,7 +153,7 @@ namespace cpu
                 sp--;
                 mmu.write(sp, (pc >> 8) & 0xFF); // MSB
                 sp--;
-                mmu.write(sp, pc & 0xFF); //LSB
+                mmu.write(sp, pc & 0xFF); // LSB
                 pc = irq_vec.at(bit_idx);
                 return true;
             }
@@ -133,7 +166,9 @@ namespace cpu
     /// @return the number of cycles the instruction took
     uint8_t CPU::step()
     {
-        if (cpu_stopped) {
+        // HALT is rare, CPU normally executes instructions
+        if (UNLIKELY(cpu_stopped))
+        {
             return 4; // HALT consumes cycles but doesn't execute
         }
 
@@ -187,13 +222,13 @@ namespace cpu
             pc += 2;
             return 20;
         case 0x09: // ADD HL, BC
-            {
-                uint32_t result = (uint32_t)getHL() + (uint32_t)getBC();
-                setNFlag(false);
-                setHFlag(((getHL() & 0xFFF) + (getBC() & 0xFFF)) > 0xFFF);
-                setHL(result & 0xFFFF);
-                setCFlag(result > 0xFFFF);
-            }
+        {
+            uint32_t result = (uint32_t)getHL() + (uint32_t)getBC();
+            setNFlag(false);
+            setHFlag(((getHL() & 0xFFF) + (getBC() & 0xFFF)) > 0xFFF);
+            setHL(result & 0xFFFF);
+            setCFlag(result > 0xFFFF);
+        }
             return 8;
         case 0x0A: // LD A, (BC)
             a = mmu.read(getBC());
@@ -451,18 +486,25 @@ namespace cpu
             return 4;
         // LD r, r' instructions (0x40-0x7F except 0x76, 0x77) - Factorized
         default:
-            if ((opcode >= 0x40 && opcode <= 0x75) || (opcode >= 0x78 && opcode <= 0x7F)) {
+            if ((opcode >= 0x40 && opcode <= 0x75) || (opcode >= 0x78 && opcode <= 0x7F))
+            {
                 uint8_t dst = (opcode >> 3) & 0x07;
                 uint8_t src = opcode & 0x07;
 
-                if (dst == 6) { // LD (HL), r
-                    if (src == 6) break; // Invalid: LD (HL), (HL)
+                if (dst == 6)
+                { // LD (HL), r
+                    if (src == 6)
+                        break; // Invalid: LD (HL), (HL)
                     mmu.write(getHL(), *getReg(src));
                     return 8;
-                } else if (src == 6) { // LD r, (HL)
+                }
+                else if (src == 6)
+                { // LD r, (HL)
                     *getReg(dst) = mmu.read(getHL());
                     return 8;
-                } else { // LD r, r'
+                }
+                else
+                { // LD r, r'
                     *getReg(dst) = *getReg(src);
                     return 4;
                 }
@@ -475,10 +517,20 @@ namespace cpu
             mmu.write(getHL(), a);
             return 8;
         // ADD A, r / ADC A, r (0x80-0x8F) - Factorized
-        case 0x80: case 0x81: case 0x82: case 0x83:
-        case 0x84: case 0x85: case 0x87:
-        case 0x88: case 0x89: case 0x8A: case 0x8B:
-        case 0x8C: case 0x8D: case 0x8F:
+        case 0x80:
+        case 0x81:
+        case 0x82:
+        case 0x83:
+        case 0x84:
+        case 0x85:
+        case 0x87:
+        case 0x88:
+        case 0x89:
+        case 0x8A:
+        case 0x8B:
+        case 0x8C:
+        case 0x8D:
+        case 0x8F:
         {
             uint8_t reg_idx = opcode & 0x07;
             bool use_carry = (opcode & 0x08) != 0;
@@ -492,10 +544,20 @@ namespace cpu
             doAdd(mmu.read(getHL()), true);
             return 8;
         // SUB r / SBC A, r (0x90-0x9F) - Factorized
-        case 0x90: case 0x91: case 0x92: case 0x93:
-        case 0x94: case 0x95: case 0x97:
-        case 0x98: case 0x99: case 0x9A: case 0x9B:
-        case 0x9C: case 0x9D: case 0x9F:
+        case 0x90:
+        case 0x91:
+        case 0x92:
+        case 0x93:
+        case 0x94:
+        case 0x95:
+        case 0x97:
+        case 0x98:
+        case 0x99:
+        case 0x9A:
+        case 0x9B:
+        case 0x9C:
+        case 0x9D:
+        case 0x9F:
         {
             uint8_t reg_idx = opcode & 0x07;
             bool use_carry = (opcode & 0x08) != 0;
@@ -509,8 +571,13 @@ namespace cpu
             doSub(mmu.read(getHL()), true);
             return 8;
         // AND r (0xA0-0xA7) - Factorized
-        case 0xA0: case 0xA1: case 0xA2: case 0xA3:
-        case 0xA4: case 0xA5: case 0xA7:
+        case 0xA0:
+        case 0xA1:
+        case 0xA2:
+        case 0xA3:
+        case 0xA4:
+        case 0xA5:
+        case 0xA7:
         {
             uint8_t reg_idx = opcode & 0x07;
             doAnd(*getReg(reg_idx));
@@ -520,8 +587,13 @@ namespace cpu
             doAnd(mmu.read(getHL()));
             return 8;
         // XOR r (0xA8-0xAF) - Factorized
-        case 0xA8: case 0xA9: case 0xAA: case 0xAB:
-        case 0xAC: case 0xAD: case 0xAF:
+        case 0xA8:
+        case 0xA9:
+        case 0xAA:
+        case 0xAB:
+        case 0xAC:
+        case 0xAD:
+        case 0xAF:
         {
             uint8_t reg_idx = opcode & 0x07;
             doXor(*getReg(reg_idx));
@@ -531,8 +603,13 @@ namespace cpu
             doXor(mmu.read(getHL()));
             return 8;
         // OR r (0xB0-0xB7) - Factorized
-        case 0xB0: case 0xB1: case 0xB2: case 0xB3:
-        case 0xB4: case 0xB5: case 0xB7:
+        case 0xB0:
+        case 0xB1:
+        case 0xB2:
+        case 0xB3:
+        case 0xB4:
+        case 0xB5:
+        case 0xB7:
         {
             uint8_t reg_idx = opcode & 0x07;
             doOr(*getReg(reg_idx));
@@ -542,8 +619,13 @@ namespace cpu
             doOr(mmu.read(getHL()));
             return 8;
         // CP r (0xB8-0xBF) - Factorized
-        case 0xB8: case 0xB9: case 0xBA: case 0xBB:
-        case 0xBC: case 0xBD: case 0xBF:
+        case 0xB8:
+        case 0xB9:
+        case 0xBA:
+        case 0xBB:
+        case 0xBC:
+        case 0xBD:
+        case 0xBF:
         {
             uint8_t reg_idx = opcode & 0x07;
             doCp(*getReg(reg_idx));
@@ -945,16 +1027,26 @@ namespace cpu
     uint8_t CPU::execute_extended(uint8_t ext_opcode)
     {
         // Helper lambda for getting register reference
-        auto getReg = [&](uint8_t idx) -> uint8_t& {
-            switch (idx) {
-                case 0: return b;
-                case 1: return c;
-                case 2: return d;
-                case 3: return e;
-                case 4: return h;
-                case 5: return l;
-                case 7: return a;
-                default: return b; // Should not happen
+        auto getReg = [&](uint8_t idx) -> uint8_t &
+        {
+            switch (idx)
+            {
+            case 0:
+                return b;
+            case 1:
+                return c;
+            case 2:
+                return d;
+            case 3:
+                return e;
+            case 4:
+                return h;
+            case 5:
+                return l;
+            case 7:
+                return a;
+            default:
+                return b; // Should not happen
             }
         };
 
@@ -962,8 +1054,10 @@ namespace cpu
         uint8_t bit_idx = (ext_opcode >> 3) & 0x07;
 
         // RLC r (0x00-0x07)
-        if (ext_opcode >= 0x00 && ext_opcode <= 0x07) {
-            if (reg_idx == 6) { // RLC (HL)
+        if (ext_opcode <= 0x07)
+        {
+            if (reg_idx == 6)
+            { // RLC (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t carry = (value >> 7) & 1;
                 value = (value << 1) | carry;
@@ -973,8 +1067,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(carry);
                 return 16;
-            } else { // RLC r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // RLC r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t carry = (reg >> 7) & 1;
                 reg = (reg << 1) | carry;
                 setZFlag(reg == 0);
@@ -986,8 +1082,10 @@ namespace cpu
         }
 
         // RRC r (0x08-0x0F)
-        if (ext_opcode >= 0x08 && ext_opcode <= 0x0F) {
-            if (reg_idx == 6) { // RRC (HL)
+        if (ext_opcode >= 0x08 && ext_opcode <= 0x0F)
+        {
+            if (reg_idx == 6)
+            { // RRC (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t carry = value & 1;
                 value = (value >> 1) | (carry << 7);
@@ -997,8 +1095,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(carry);
                 return 16;
-            } else { // RRC r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // RRC r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t carry = reg & 1;
                 reg = (reg >> 1) | (carry << 7);
                 setZFlag(reg == 0);
@@ -1010,9 +1110,11 @@ namespace cpu
         }
 
         // RL r (0x10-0x17)
-        if (ext_opcode >= 0x10 && ext_opcode <= 0x17) {
+        if (ext_opcode >= 0x10 && ext_opcode <= 0x17)
+        {
             uint8_t old_carry = readCFlag() ? 1 : 0;
-            if (reg_idx == 6) { // RL (HL)
+            if (reg_idx == 6)
+            { // RL (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t new_carry = (value >> 7) & 1;
                 value = (value << 1) | old_carry;
@@ -1022,8 +1124,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(new_carry);
                 return 16;
-            } else { // RL r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // RL r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t new_carry = (reg >> 7) & 1;
                 reg = (reg << 1) | old_carry;
                 setZFlag(reg == 0);
@@ -1035,9 +1139,11 @@ namespace cpu
         }
 
         // RR r (0x18-0x1F)
-        if (ext_opcode >= 0x18 && ext_opcode <= 0x1F) {
+        if (ext_opcode >= 0x18 && ext_opcode <= 0x1F)
+        {
             uint8_t old_carry = readCFlag() ? 1 : 0;
-            if (reg_idx == 6) { // RR (HL)
+            if (reg_idx == 6)
+            { // RR (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t new_carry = value & 1;
                 value = (value >> 1) | (old_carry << 7);
@@ -1047,8 +1153,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(new_carry);
                 return 16;
-            } else { // RR r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // RR r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t new_carry = reg & 1;
                 reg = (reg >> 1) | (old_carry << 7);
                 setZFlag(reg == 0);
@@ -1060,8 +1168,10 @@ namespace cpu
         }
 
         // SLA r (0x20-0x27)
-        if (ext_opcode >= 0x20 && ext_opcode <= 0x27) {
-            if (reg_idx == 6) { // SLA (HL)
+        if (ext_opcode >= 0x20 && ext_opcode <= 0x27)
+        {
+            if (reg_idx == 6)
+            { // SLA (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t carry = (value >> 7) & 1;
                 value = value << 1;
@@ -1071,8 +1181,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(carry);
                 return 16;
-            } else { // SLA r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // SLA r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t carry = (reg >> 7) & 1;
                 reg = reg << 1;
                 setZFlag(reg == 0);
@@ -1084,8 +1196,10 @@ namespace cpu
         }
 
         // SRA r (0x28-0x2F)
-        if (ext_opcode >= 0x28 && ext_opcode <= 0x2F) {
-            if (reg_idx == 6) { // SRA (HL)
+        if (ext_opcode >= 0x28 && ext_opcode <= 0x2F)
+        {
+            if (reg_idx == 6)
+            { // SRA (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t carry = value & 1;
                 value = (value >> 1) | (value & 0x80); // Keep MSB
@@ -1095,8 +1209,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(carry);
                 return 16;
-            } else { // SRA r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // SRA r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t carry = reg & 1;
                 reg = (reg >> 1) | (reg & 0x80); // Keep MSB
                 setZFlag(reg == 0);
@@ -1108,8 +1224,10 @@ namespace cpu
         }
 
         // SWAP r (0x30-0x37)
-        if (ext_opcode >= 0x30 && ext_opcode <= 0x37) {
-            if (reg_idx == 6) { // SWAP (HL)
+        if (ext_opcode >= 0x30 && ext_opcode <= 0x37)
+        {
+            if (reg_idx == 6)
+            { // SWAP (HL)
                 uint8_t value = mmu.read(getHL());
                 value = ((value & 0x0F) << 4) | ((value & 0xF0) >> 4);
                 mmu.write(getHL(), value);
@@ -1118,8 +1236,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(false);
                 return 16;
-            } else { // SWAP r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // SWAP r
+                uint8_t &reg = getReg(reg_idx);
                 reg = ((reg & 0x0F) << 4) | ((reg & 0xF0) >> 4);
                 setZFlag(reg == 0);
                 setNFlag(false);
@@ -1130,8 +1250,10 @@ namespace cpu
         }
 
         // SRL r (0x38-0x3F)
-        if (ext_opcode >= 0x38 && ext_opcode <= 0x3F) {
-            if (reg_idx == 6) { // SRL (HL)
+        if (ext_opcode >= 0x38 && ext_opcode <= 0x3F)
+        {
+            if (reg_idx == 6)
+            { // SRL (HL)
                 uint8_t value = mmu.read(getHL());
                 uint8_t carry = value & 1;
                 value = value >> 1;
@@ -1141,8 +1263,10 @@ namespace cpu
                 setHFlag(false);
                 setCFlag(carry);
                 return 16;
-            } else { // SRL r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // SRL r
+                uint8_t &reg = getReg(reg_idx);
                 uint8_t carry = reg & 1;
                 reg = reg >> 1;
                 setZFlag(reg == 0);
@@ -1154,15 +1278,19 @@ namespace cpu
         }
 
         // BIT b, r (0x40-0x7F)
-        if (ext_opcode >= 0x40 && ext_opcode <= 0x7F) {
+        if (ext_opcode >= 0x40 && ext_opcode <= 0x7F)
+        {
             uint8_t value;
-            if (reg_idx == 6) { // BIT b, (HL)
+            if (reg_idx == 6)
+            { // BIT b, (HL)
                 value = mmu.read(getHL());
                 setZFlag((value & (1 << bit_idx)) == 0);
                 setNFlag(false);
                 setHFlag(true);
                 return 12;
-            } else { // BIT b, r
+            }
+            else
+            { // BIT b, r
                 value = getReg(reg_idx);
                 setZFlag((value & (1 << bit_idx)) == 0);
                 setNFlag(false);
@@ -1172,28 +1300,36 @@ namespace cpu
         }
 
         // RES b, r (0x80-0xBF)
-        if (ext_opcode >= 0x80 && ext_opcode <= 0xBF) {
-            if (reg_idx == 6) { // RES b, (HL)
+        if (ext_opcode >= 0x80 && ext_opcode <= 0xBF)
+        {
+            if (reg_idx == 6)
+            { // RES b, (HL)
                 uint8_t value = mmu.read(getHL());
                 value &= ~(1 << bit_idx);
                 mmu.write(getHL(), value);
                 return 16;
-            } else { // RES b, r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // RES b, r
+                uint8_t &reg = getReg(reg_idx);
                 reg &= ~(1 << bit_idx);
                 return 8;
             }
         }
 
         // SET b, r (0xC0-0xFF)
-        if (ext_opcode >= 0xC0 && ext_opcode <= 0xFF) {
-            if (reg_idx == 6) { // SET b, (HL)
+        if (ext_opcode >= 0xC0)
+        {
+            if (reg_idx == 6)
+            { // SET b, (HL)
                 uint8_t value = mmu.read(getHL());
                 value |= (1 << bit_idx);
                 mmu.write(getHL(), value);
                 return 16;
-            } else { // SET b, r
-                uint8_t& reg = getReg(reg_idx);
+            }
+            else
+            { // SET b, r
+                uint8_t &reg = getReg(reg_idx);
                 reg |= (1 << bit_idx);
                 return 8;
             }

@@ -1,13 +1,30 @@
 #pragma once
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <string>
 
-namespace display {
+namespace display::menu {
 
-// Simple 8x8 bitmap font (ASCII 32-127)
-// Each character is 8 bytes, each byte represents one row
+// Helper to convert RGB565 to BGR565 for ST7789V Seengreat
+constexpr uint16_t rgb_to_bgr565(uint16_t rgb) {
+    uint16_t r = (rgb >> 11) & 0x1F;  // Extract 5 red bits
+    uint16_t g = (rgb >> 5) & 0x3F;   // Extract 6 green bits
+    uint16_t b = rgb & 0x1F;          // Extract 5 blue bits
+    return (b << 11) | (g << 5) | r;  // Reassemble as BGR
+}
+
+// Couleurs RGB565 pour l'écran LCD (converties en BGR pour ST7789V Seengreat)
+constexpr uint16_t RGB565_WHITE = rgb_to_bgr565(0xFFFF);
+constexpr uint16_t RGB565_BLACK = rgb_to_bgr565(0x0000);
+constexpr uint16_t RGB565_LIGHT_GRAY = rgb_to_bgr565(0xC618);
+constexpr uint16_t RGB565_DARK_GRAY = rgb_to_bgr565(0x632C);
+constexpr uint16_t RGB565_YELLOW = rgb_to_bgr565(0xFFE0);  // Vrai jaune !
+constexpr uint16_t RGB565_CYAN = rgb_to_bgr565(0x07FF);
+constexpr uint16_t RGB565_GREEN = rgb_to_bgr565(0x07E0);
+constexpr uint16_t RGB565_RED = rgb_to_bgr565(0xF800);
+
+// Police 8x8 (réutiliser celle de text_renderer.hpp)
 constexpr uint8_t FONT_8X8[][8] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // Space (32)
     {0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00}, // !
@@ -37,7 +54,7 @@ constexpr uint8_t FONT_8X8[][8] = {
     {0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00}, // 9
     {0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00}, // :
     {0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06}, // ;
-    {0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00}, // <
+    {0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00}, // 
     {0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00}, // =
     {0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00}, // >
     {0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00}, // ?
@@ -106,19 +123,10 @@ constexpr uint8_t FONT_8X8[][8] = {
     {0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // ~
 };
 
-// Colors as uint8_t (0-3 for GB palette)
-enum TextColor : uint8_t {
-    COLOR_WHITE = 0,
-    COLOR_LIGHT_GRAY = 1,
-    COLOR_DARK_GRAY = 2,
-    COLOR_BLACK = 3,
-    COLOR_YELLOW = 1  // Using light gray as "yellow" for selection
-};
-
-// Draw a single character at position (x, y)
-inline void draw_char(std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& framebuffer,
-                      int x, int y, char c, uint8_t color) {
-    if (c < 32 || c > 126) c = 32; // Default to space for unsupported chars
+// Dessiner un caractère en RGB565
+inline void draw_char_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
+                             int x, int y, char c, uint16_t color) {
+    if (c < 32 || c > 126) c = 32;
 
     const uint8_t* glyph = FONT_8X8[c - 32];
 
@@ -127,28 +135,29 @@ inline void draw_char(std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& framebuffer,
             if (glyph[row] & (1 << (7 - col))) {
                 int px = x + col;
                 int py = y + row;
-                if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
-                    framebuffer[py * LCD_WIDTH + px] = color;
+                if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {
+                    framebuffer[py * fb_width + px] = color;
                 }
             }
         }
     }
 }
 
-// Draw a string at position (x, y)
-inline void draw_text(std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& framebuffer,
-                      int x, int y, const std::string& text, uint8_t color) {
+// Dessiner du texte en RGB565
+inline void draw_text_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
+                             int x, int y, const std::string& text, uint16_t color) {
     int current_x = x;
     for (char c : text) {
-        draw_char(framebuffer, current_x, y, c, color);
-        current_x += 8;  // Move to next character position
+        draw_char_rgb565(framebuffer, fb_width, fb_height, current_x, y, c, color);
+        current_x += 8;
     }
 }
 
-// Clear framebuffer with a color
-inline void clear_framebuffer(std::array<uint8_t, LCD_WIDTH * LCD_HEIGHT>& framebuffer,
-                              uint8_t color = COLOR_BLACK) {
-    framebuffer.fill(color);
+// Effacer le framebuffer RGB565
+inline void clear_framebuffer_rgb565(uint16_t* framebuffer, int size, uint16_t color) {
+    for (int i = 0; i < size; i++) {
+        framebuffer[i] = color;
+    }
 }
 
-} // namespace display
+} // namespace display::menu

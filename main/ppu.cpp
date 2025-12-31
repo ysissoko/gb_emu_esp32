@@ -1,7 +1,17 @@
 #include "ppu.hpp"
 #include "memory_bus.hpp"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include <cstdio>
 #include <cstring>
+
+// Disable logging in PPU for maximum performance
+#undef ESP_LOGI
+#undef ESP_LOGW
+#undef ESP_LOGE
+#define ESP_LOGI(tag, fmt, ...) do {} while(0)
+#define ESP_LOGW(tag, fmt, ...) do {} while(0)
+#define ESP_LOGE(tag, fmt, ...) do {} while(0)
 
 namespace ppu
 {
@@ -13,21 +23,33 @@ namespace ppu
     constexpr uint16_t VBLANK_SCANLINES = 10;
     constexpr uint16_t TOTAL_SCANLINES = display::LCD_HEIGHT + VBLANK_SCANLINES;
 
-    PPU::PPU(memory::MemoryBus& mmu, std::unique_ptr<display::Display> display)
+    PPU::PPU(memory::MemoryBus& mmu, std::shared_ptr<display::LCDDisplay> display)
         : mmu(mmu), mode(Mode::OAM_SCAN), mode_cycles(0), ly(0), frame_ready(false),
-          window_line_counter(0), visible_sprite_count(0), display(std::move(display))
+          window_line_counter(0), visible_sprite_count(0), display(display)
     {
-        framebuffer.fill(0);
+        // Allocate 8-bit framebuffer in PSRAM (much smaller, PPU friendly)
+        framebuffer = (uint8_t*)heap_caps_calloc(display::LCD_WIDTH * display::LCD_HEIGHT,
+                                                  sizeof(uint8_t), MALLOC_CAP_SPIRAM);
+        if (framebuffer == nullptr) {
+            ESP_LOGE("PPU", "Failed to allocate framebuffer in PSRAM!");
+        } else {
+            ESP_LOGI("PPU", "Framebuffer allocated in PSRAM (%d bytes)",
+                     display::LCD_WIDTH * display::LCD_HEIGHT);
+        }
     }
 
     PPU::~PPU()
     {
+        if (framebuffer != nullptr) {
+            free(framebuffer);
+            framebuffer = nullptr;
+        }
     }
 
     void PPU::step(uint8_t cycles)
     {
-        // Check if LCD is enabled
-        if ((readLCDC() & LCDC_LCD_ENABLE) == 0)
+        // Check if LCD is enabled (very likely)
+        if (UNLIKELY((readLCDC() & LCDC_LCD_ENABLE) == 0))
         {
             return;
         }
@@ -66,7 +88,11 @@ namespace ppu
                     setMode(Mode::VBLANK);
                     mmu.request_interrupt(memory::IRQFlag::IRQ_VBLANK);
                     frame_ready = true;
-                    display->renderFrame(framebuffer);
+
+                    // Start asynchronous frame rendering (convert 8-bit to RGB565 + DMA transfer)
+                    // This happens in LCD driver, allowing PPU to continue
+                    display->renderFrameAsync(framebuffer);
+
                     window_line_counter = 0;  // Reset window counter at VBlank
                 }
                 else
@@ -151,60 +177,70 @@ namespace ppu
 
     void PPU::renderScanline()
     {
+        // Cache all register reads once per scanline (optimization from Walnut-GB)
+        ScanlineContext ctx = {
+            .lcdc = readLCDC(),
+            .scy = readSCY(),
+            .scx = readSCX(),
+            .bgp = readBGP(),
+            .wy = readWY(),
+            .wx = readWX(),
+            .obp0 = readOBP0(),
+            .obp1 = readOBP1()
+        };
+
         // Render background for current scanline
-        renderBackground();
+        renderBackground(ctx);
 
         // Render window (if enabled and visible on this scanline)
-        renderWindow();
+        renderWindow(ctx);
 
         // Render sprites (already scanned during OAM_SCAN mode)
-        renderSprites();
+        renderSprites(ctx);
     }
 
-    void PPU::renderBackground()
+    void PPU::renderBackground(const ScanlineContext& ctx)
     {
-        uint8_t lcdc = readLCDC();
-
-        // Check if background is enabled
-        if ((lcdc & LCDC_BG_WINDOW_ENABLE) == 0)
+        // Check if background is enabled (unlikely to be disabled)
+        if (UNLIKELY((ctx.lcdc & LCDC_BG_WINDOW_ENABLE) == 0))
         {
-            // Background disabled, fill with white
+            // Background disabled, fill with white - optimized with single calculation
+            size_t row_offset = ly * display::LCD_WIDTH;
             for (int x = 0; x < display::LCD_WIDTH; x++)
             {
-                framebuffer[ly * display::LCD_WIDTH + x] = static_cast<uint8_t>(display::Color::WHITE);
+                framebuffer[row_offset + x] = 0; // WHITE (palette index 0)
             }
             return;
         }
 
-        uint8_t scy = readSCY();
-        uint8_t scx = readSCX();
-        uint8_t bgp = readBGP();
-
         // Determine which tile map to use (0x9800 or 0x9C00)
-        uint16_t tile_map_base = (lcdc & LCDC_BG_TILE_MAP) ? 0x9C00 : 0x9800;
+        uint16_t tile_map_base = (ctx.lcdc & LCDC_BG_TILE_MAP) ? 0x9C00 : 0x9800;
 
         // Determine which tile data to use
-        bool use_signed_tiles = (lcdc & LCDC_BG_WINDOW_TILES) == 0;
+        bool use_signed_tiles = (ctx.lcdc & LCDC_BG_WINDOW_TILES) == 0;
         uint16_t tile_data_base = use_signed_tiles ? 0x9000 : 0x8000;
 
         // Calculate Y position in the 256x256 background map
-        uint8_t y_pos = (ly + scy) & 0xFF;
+        uint8_t y_pos = (ly + ctx.scy) & 0xFF;
         // Optimized: Use bitwise operations (TILE_SIZE = 8)
         uint8_t tile_y = y_pos >> 3;     // Division by 8
         uint8_t pixel_y = y_pos & 0x7;   // Modulo 8
+
+        // Précalcul pour optimiser la boucle
+        size_t fb_row_offset = ly * display::LCD_WIDTH;
+        uint16_t tile_map_row_base = tile_map_base + (tile_y * TILES_PER_ROW);
 
         // Render each pixel in the scanline
         for (int x = 0; x < display::LCD_WIDTH; x++)
         {
             // Calculate X position in the 256x256 background map
-            uint8_t x_pos = (x + scx) & 0xFF;
+            uint8_t x_pos = (x + ctx.scx) & 0xFF;
             // Optimized: Use bitwise operations
             uint8_t tile_x = x_pos >> 3;     // Division by 8
             uint8_t pixel_x = x_pos & 0x7;   // Modulo 8
 
-            // Get tile index from tile map
-            uint16_t tile_map_addr = tile_map_base + (tile_y * TILES_PER_ROW) + tile_x;
-            uint8_t tile_index = mmu.read(tile_map_addr);
+            // Get tile index from tile map - optimized address calculation
+            uint8_t tile_index = mmu.read(tile_map_row_base + tile_x);
 
             // Calculate tile data address
             uint16_t tile_addr;
@@ -232,79 +268,37 @@ namespace ppu
             uint8_t color_id = (color_bit_high << 1) | color_bit_low;
 
             // Apply palette
-            uint8_t palette_color = (bgp >> (color_id * 2)) & 0x03;
+            uint8_t palette_color = (ctx.bgp >> (color_id * 2)) & 0x03;
 
-            // Write to framebuffer
-            framebuffer[ly * display::LCD_WIDTH + x] = palette_color;
+            // Write palette index to framebuffer - optimized offset
+            framebuffer[fb_row_offset + x] = palette_color;
         }
     }
 
-    uint8_t PPU::readLCDC() const
-    {
-        return mmu.read(0xFF40);
-    }
+    // Register read functions moved to ppu.hpp as inline
 
-    uint8_t PPU::readSCY() const
+    void PPU::renderWindow(const ScanlineContext& ctx)
     {
-        return mmu.read(0xFF42);
-    }
-
-    uint8_t PPU::readSCX() const
-    {
-        return mmu.read(0xFF43);
-    }
-
-    uint8_t PPU::readBGP() const
-    {
-        return mmu.read(0xFF47);
-    }
-
-    uint8_t PPU::readWY() const
-    {
-        return mmu.read(0xFF4A);
-    }
-
-    uint8_t PPU::readWX() const
-    {
-        return mmu.read(0xFF4B);
-    }
-
-    uint8_t PPU::readOBP0() const
-    {
-        return mmu.read(0xFF48);
-    }
-
-    uint8_t PPU::readOBP1() const
-    {
-        return mmu.read(0xFF49);
-    }
-
-    void PPU::renderWindow()
-    {
-        uint8_t lcdc = readLCDC();
-
-        // Check if window is enabled
-        if ((lcdc & LCDC_WINDOW_ENABLE) == 0)
+        // Check if window is enabled (rarely used)
+        if (UNLIKELY((ctx.lcdc & LCDC_WINDOW_ENABLE) == 0))
         {
             return;
         }
 
-        uint8_t wy = readWY();
-        uint8_t wx = readWX();
-
-        // Window is only displayed if WY <= LY and WX < 167
-        if (wy > ly || wx >= 167)
+        // Window is only displayed if WY <= LY and WX < 167 (rare condition)
+        if (UNLIKELY(ctx.wy > ly || ctx.wx >= 167))
         {
             return;
         }
 
-        uint8_t bgp = readBGP();
+        // Précalcul pour optimiser
+        size_t fb_row_offset = ly * display::LCD_WIDTH;
 
         // Determine which tile map to use for window
-        uint16_t tile_map_base = (lcdc & LCDC_WINDOW_TILE_MAP) ? 0x9C00 : 0x9800;
+        uint16_t tile_map_base = (ctx.lcdc & LCDC_WINDOW_TILE_MAP) ? 0x9C00 : 0x9800;
 
         // Determine which tile data to use
-        bool use_signed_tiles = (lcdc & LCDC_BG_WINDOW_TILES) == 0;
+        bool use_signed_tiles = (ctx.lcdc & LCDC_BG_WINDOW_TILES) == 0;
         uint16_t tile_data_base = use_signed_tiles ? 0x9000 : 0x8000;
 
         // Calculate tile Y based on window internal line counter
@@ -313,7 +307,7 @@ namespace ppu
         uint8_t pixel_y = window_line_counter & 0x7;  // Modulo 8
 
         // WX is offset by 7, so actual X start is WX - 7
-        int window_x_start = wx - 7;
+        int window_x_start = ctx.wx - 7;
 
         // Render window pixels
         for (int x = 0; x < display::LCD_WIDTH; x++)
@@ -358,10 +352,10 @@ namespace ppu
             uint8_t color_id = (color_bit_high << 1) | color_bit_low;
 
             // Apply palette
-            uint8_t palette_color = (bgp >> (color_id * 2)) & 0x03;
+            uint8_t palette_color = (ctx.bgp >> (color_id * 2)) & 0x03;
 
-            // Write to framebuffer
-            framebuffer[ly * display::LCD_WIDTH + x] = palette_color;
+            // Write palette index to framebuffer - optimized offset
+            framebuffer[fb_row_offset + x] = palette_color;
         }
 
         // Increment window line counter (window is being rendered on this scanline)
@@ -408,18 +402,19 @@ namespace ppu
         }
     }
 
-    void PPU::renderSprites()
+    void PPU::renderSprites(const ScanlineContext& ctx)
     {
-        uint8_t lcdc = readLCDC();
-
-        // Check if sprites are enabled
-        if ((lcdc & LCDC_OBJ_ENABLE) == 0)
+        // Check if sprites are enabled (likely, most games use sprites)
+        if (UNLIKELY((ctx.lcdc & LCDC_OBJ_ENABLE) == 0))
         {
             return;
         }
 
         // Determine sprite height
-        uint8_t sprite_height = (lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
+        uint8_t sprite_height = (ctx.lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
+
+        // Précalcul pour optimiser
+        size_t fb_row_offset = ly * display::LCD_WIDTH;
 
         // Render sprites in reverse order (lower index = higher priority)
         for (int i = visible_sprite_count - 1; i >= 0; i--)
@@ -431,7 +426,7 @@ namespace ppu
             int sprite_x = sprite.x - 8;
 
             // Get palette
-            uint8_t palette = (sprite.attributes & OAM_PALETTE) ? readOBP1() : readOBP0();
+            uint8_t palette = (sprite.attributes & OAM_PALETTE) ? ctx.obp1 : ctx.obp0;
 
             // Calculate Y position within sprite
             int y_in_sprite = ly - sprite_y;
@@ -466,15 +461,15 @@ namespace ppu
             {
                 int screen_x = sprite_x + x;
 
-                // Skip if off screen
-                if (screen_x < 0 || screen_x >= display::LCD_WIDTH)
+                // Skip if off screen (unlikely for visible sprites)
+                if (UNLIKELY(screen_x < 0 || screen_x >= display::LCD_WIDTH))
                 {
                     continue;
                 }
 
                 // Calculate bit position (apply X flip)
                 uint8_t bit_pos;
-                if (sprite.attributes & OAM_X_FLIP)
+                if (UNLIKELY(sprite.attributes & OAM_X_FLIP))
                 {
                     bit_pos = x;
                 }
@@ -488,17 +483,17 @@ namespace ppu
                 uint8_t color_bit_high = (byte2 >> bit_pos) & 1;
                 uint8_t color_id = (color_bit_high << 1) | color_bit_low;
 
-                // display::Color 0 is transparent for sprites
-                if (color_id == 0)
+                // Color 0 is transparent for sprites (common case)
+                if (LIKELY(color_id == 0))
                 {
                     continue;
                 }
 
-                // Check priority
-                uint8_t bg_color = framebuffer[ly * display::LCD_WIDTH + screen_x];
+                // Check priority - compare with palette index 0 (WHITE)
+                uint8_t bg_color = framebuffer[fb_row_offset + screen_x];
 
-                // If priority flag is set and BG color is not 0, BG has priority
-                if ((sprite.attributes & OAM_PRIORITY) && bg_color != 0)
+                // If priority flag is set and BG color is not 0, BG has priority (rare)
+                if (UNLIKELY((sprite.attributes & OAM_PRIORITY) && bg_color != 0))
                 {
                     continue;
                 }
@@ -506,8 +501,8 @@ namespace ppu
                 // Apply palette
                 uint8_t palette_color = (palette >> (color_id * 2)) & 0x03;
 
-                // Write to framebuffer
-                framebuffer[ly * display::LCD_WIDTH + screen_x] = palette_color;
+                // Write palette index to framebuffer - optimized offset
+                framebuffer[fb_row_offset + screen_x] = palette_color;
             }
         }
     }

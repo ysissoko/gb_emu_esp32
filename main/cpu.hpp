@@ -2,8 +2,13 @@
 
 #include <cstdint>
 #include <array>
+#include "esp_attr.h"
 #include "memory_bus.hpp"
 #include "ppu.hpp"
+
+// Branch prediction hints for compiler optimization (from Walnut-GB)
+#define LIKELY(x)   __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 namespace cpu
 {
@@ -22,10 +27,10 @@ namespace cpu
     public:
         CPU(memory::MemoryBus&, ppu::PPU&);
         ~CPU();
-        uint8_t execute(uint8_t);
-        uint8_t execute_extended(uint8_t);
-        uint8_t step();
-        void run();
+        IRAM_ATTR uint8_t execute(uint8_t);
+        IRAM_ATTR uint8_t execute_extended(uint8_t);
+        IRAM_ATTR uint8_t step();
+        void run_frame();
     private:
         uint8_t a{0};
         uint8_t b{0};
@@ -47,14 +52,14 @@ namespace cpu
         bool cpu_stopped{false};
         bool ime_enabled{false};
 
-        bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
-        bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };
-        bool readHFlag() const { return (f & H_FLAG_MASK) != 0; };
-        bool readCFlag() const { return (f & C_FLAG_MASK) != 0; };
+        IRAM_ATTR inline bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
+        IRAM_ATTR inline bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };
+        IRAM_ATTR inline bool readHFlag() const { return (f & H_FLAG_MASK) != 0; };
+        IRAM_ATTR inline bool readCFlag() const { return (f & C_FLAG_MASK) != 0; };
 
         bool test_interrupts_flags();
 
-        void setZFlag(bool value) {
+        IRAM_ATTR inline void setZFlag(bool value) {
             if (value) {
                 f |= Z_FLAG_MASK;
             } else {
@@ -62,7 +67,7 @@ namespace cpu
             }
         }
 
-        void setNFlag(bool value) {
+        IRAM_ATTR inline void setNFlag(bool value) {
             if (value) {
                 f |= N_FLAG_MASK;
             } else {
@@ -70,7 +75,7 @@ namespace cpu
             }
         }
 
-        void setHFlag(bool value) {
+        IRAM_ATTR inline void setHFlag(bool value) {
             if (value) {
                 f |= H_FLAG_MASK;
             } else {
@@ -78,7 +83,7 @@ namespace cpu
             }
         }
 
-        void setCFlag(bool value) {
+        IRAM_ATTR inline void setCFlag(bool value) {
             if (value) {
                 f |= C_FLAG_MASK;
             } else {
@@ -87,7 +92,7 @@ namespace cpu
         }
 
         // Helper functions for register access and common operations
-        uint8_t* getReg(uint8_t idx) {
+        IRAM_ATTR inline uint8_t* getReg(uint8_t idx) {
             switch (idx) {
                 case 0: return &b;
                 case 1: return &c;
@@ -100,21 +105,21 @@ namespace cpu
             }
         }
 
-        void doInc(uint8_t& reg) {
+        IRAM_ATTR inline void doInc(uint8_t& reg) {
             setHFlag((reg & 0x0F) == 0x0F);
             reg += 1;
             setZFlag(reg == 0);
             setNFlag(false);
         }
 
-        void doDec(uint8_t& reg) {
+        IRAM_ATTR inline void doDec(uint8_t& reg) {
             setHFlag((reg & 0x0F) == 0x00);
             reg -= 1;
             setZFlag(reg == 0);
             setNFlag(true);
         }
 
-        void doAdd(uint8_t value, bool use_carry = false) {
+        IRAM_ATTR inline void doAdd(uint8_t value, bool use_carry = false) {
             uint8_t carry = (use_carry && readCFlag()) ? 1 : 0;
             setHFlag(((a & 0x0F) + (value & 0x0F) + carry) > 0x0F);
             setCFlag(((uint16_t)a + (uint16_t)value + carry) > 0xFF);
@@ -123,7 +128,7 @@ namespace cpu
             setNFlag(false);
         }
 
-        void doSub(uint8_t value, bool use_carry = false) {
+        IRAM_ATTR inline void doSub(uint8_t value, bool use_carry = false) {
             uint8_t carry = (use_carry && readCFlag()) ? 1 : 0;
             setHFlag((a & 0x0F) < ((value & 0x0F) + carry));
             setCFlag(a < (value + carry));
@@ -132,7 +137,7 @@ namespace cpu
             setNFlag(true);
         }
 
-        void doAnd(uint8_t value) {
+        IRAM_ATTR inline void doAnd(uint8_t value) {
             a &= value;
             setZFlag(a == 0);
             setNFlag(false);
@@ -140,7 +145,7 @@ namespace cpu
             setCFlag(false);
         }
 
-        void doXor(uint8_t value) {
+        IRAM_ATTR inline void doXor(uint8_t value) {
             a ^= value;
             setZFlag(a == 0);
             setNFlag(false);
@@ -148,7 +153,7 @@ namespace cpu
             setCFlag(false);
         }
 
-        void doOr(uint8_t value) {
+        IRAM_ATTR inline void doOr(uint8_t value) {
             a |= value;
             setZFlag(a == 0);
             setNFlag(false);
@@ -156,45 +161,45 @@ namespace cpu
             setCFlag(false);
         }
 
-        void doCp(uint8_t value) {
+        IRAM_ATTR inline void doCp(uint8_t value) {
             setZFlag(a == value);
             setNFlag(true);
             setHFlag((a & 0x0F) < (value & 0x0F));
             setCFlag(a < value);
         }
 
-        uint16_t getAF() const {
+        IRAM_ATTR inline uint16_t getAF() const {
             return a << 8 | f;
         }
 
-        uint16_t getBC() const {
+        IRAM_ATTR inline uint16_t getBC() const {
             return b << 8 | c;
         }
 
-        uint16_t getDE() const {
+        IRAM_ATTR inline uint16_t getDE() const {
             return d << 8 | e;
         }
 
-        uint16_t getHL() const {
+        IRAM_ATTR inline uint16_t getHL() const {
             return h << 8 | l;
         }
 
-        void setAF(uint16_t value) {
+        IRAM_ATTR inline void setAF(uint16_t value) {
             a = (value >> 8) & 0xFF;
             f = value & 0xF0; // Lower nibble of F is always 0
         }
 
-        void setBC(uint16_t value) {
+        IRAM_ATTR inline void setBC(uint16_t value) {
             b = (value >> 8) & 0xFF;
             c = value & 0xFF;
         }
 
-        void setDE(uint16_t value) {
+        IRAM_ATTR inline void setDE(uint16_t value) {
             d = (value >> 8) & 0xFF;
             e = value & 0xFF;
         }
 
-        void setHL(uint16_t value) {
+        IRAM_ATTR inline void setHL(uint16_t value) {
             h = (value >> 8) & 0xFF;
             l = value & 0xFF;
         }

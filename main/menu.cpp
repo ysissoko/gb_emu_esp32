@@ -1,173 +1,240 @@
 #include "menu.hpp"
+#include "text_renderer.hpp" // Nouveau header pour RGB565
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char* TAG = "menu";
+static const char *TAG = "menu";
 
-namespace display::menu {
+namespace display::menu
+{
 
-std::string Menu::loop() {
-    // Load ROM list from storage
-    ESP_LOGI(TAG, "About to call storage.list_roms()...");
-    rom_count = storage.list_roms(roms_names_list);
+    void Menu::init()
+    {
+        if (initialized)
+        {
+            return;
+        }
 
-    if (rom_count <= 0) {
-        ESP_LOGE(TAG, "No ROMs found!");
-        return "";
+        ESP_LOGI(TAG, "Initializing menu...");
+
+        // Allocate smaller framebuffer (only 80 lines instead of 320)
+        size_t fb_size = MENU_WIDTH * FB_CHUNK_HEIGHT * sizeof(uint16_t);
+        ESP_LOGI(TAG, "Allocating framebuffer: %d bytes (%dx%d)", fb_size, MENU_WIDTH, FB_CHUNK_HEIGHT);
+        ESP_LOGI(TAG, "Free heap: %lu bytes, Free SPIRAM: %lu bytes",
+                 heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+        // Try PSRAM first, fall back to DMA-capable RAM if needed
+        framebuffer = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+        if (!framebuffer)
+        {
+            ESP_LOGW(TAG, "PSRAM allocation failed, trying DMA-capable RAM...");
+            framebuffer = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+        }
+
+        if (!framebuffer)
+        {
+            ESP_LOGE(TAG, "Failed to allocate framebuffer! Need %d bytes", fb_size);
+            ESP_LOGE(TAG, "Available: Internal=%lu, SPIRAM=%lu",
+                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+            return;
+        }
+
+        ESP_LOGI(TAG, "Framebuffer allocated successfully at %p", framebuffer);
+
+        // Clear framebuffer explicitly to avoid "snow"
+        ESP_LOGI(TAG, "Clearing framebuffer chunk...");
+        clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
+
+        ESP_LOGI(TAG, "About to call storage::list_roms()...");
+        rom_count = storage::list_roms(roms_names_list);
+
+        if (rom_count <= 0)
+        {
+            ESP_LOGE(TAG, "No ROMs found!");
+            return;
+        }
+
+        ESP_LOGI(TAG, "Found %d ROMs", rom_count);
+        rom_selected = false;
+        selected_rom_idx = 0;
+        needs_redraw = true;
+        initialized = true;
     }
 
-    ESP_LOGI(TAG, "Found %d ROMs", rom_count);
-
-    // Main menu loop
-    rom_selected = false;
-    ESP_LOGI(TAG, "Entering menu loop...");
-
-    int loop_count = 0;
-    while (!rom_selected) {
-        if (loop_count == 0) {
-            ESP_LOGI(TAG, "First iteration of menu loop");
+    void Menu::update()
+    {
+        if (!initialized || rom_selected)
+        {
+            return;
         }
 
         handleInputs();
-
-        if (loop_count == 0) {
-            ESP_LOGI(TAG, "After handleInputs()");
-        }
-
-        draw();
-
-        if (loop_count == 0) {
-            ESP_LOGI(TAG, "After draw(), entering wait...");
-        }
-
-        // Small delay to avoid busy-waiting
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        loop_count++;
-        if (loop_count % 20 == 0) {
-            ESP_LOGI(TAG, "Menu loop iteration %d", loop_count);
-        }
     }
 
-    ESP_LOGI(TAG, "Exited menu loop");
-
-    // Return the full path to the selected ROM
-    std::string selected_rom_path = storage.get_mount_path() + "/" +
-                                    std::string(storage::ROMS_PATH) + "/" +
-                                    roms_names_list[selected_rom_idx];
-
-    ESP_LOGI(TAG, "Selected ROM: %s", selected_rom_path.c_str());
-    return selected_rom_path;
-}
-
-void Menu::handleInputs() {
-    // Handle up button - move cursor up
-    if (joypad->buttonUpPressed()) {
-        if (selected_rom_idx > 0) {
-            selected_rom_idx--;
-            ESP_LOGI(TAG, "Selected: %d", selected_rom_idx);
+    std::string Menu::getSelectedRomPath() const
+    {
+        if (!rom_selected)
+        {
+            return "";
         }
-        vTaskDelay(pdMS_TO_TICKS(150)); // Debounce delay
+
+        std::string selected_rom_path = std::string(storage::MOUNT_PATH) + "/" +
+                                        std::string(storage::ROMS_PATH) + "/" +
+                                        roms_names_list[selected_rom_idx];
+
+        ESP_LOGI(TAG, "Selected ROM: %s", selected_rom_path.c_str());
+        return selected_rom_path;
     }
 
-    // Handle down button - move cursor down
-    if (joypad->buttonDownPressed()) {
-        if (selected_rom_idx < rom_count - 1) {
-            selected_rom_idx++;
-            ESP_LOGI(TAG, "Selected: %d", selected_rom_idx);
+    void Menu::handleInputs()
+    {
+        static bool prev_up = false;
+        static bool prev_down = false;
+        static bool prev_a = false;
+        static bool prev_start = false;
+        static int log_counter = 0;
+
+        bool up_pressed = joypad->buttonUpPressed();
+        bool down_pressed = joypad->buttonDownPressed();
+        bool a_pressed = joypad->buttonAPressed();
+        bool start_pressed = joypad->buttonStartPressed();
+
+        // Log button states every 50 frames (~2.5 seconds at 20fps)
+        if (++log_counter % 50 == 0)
+        {
+            ESP_LOGI(TAG, "Buttons: UP=%d DOWN=%d A=%d START=%d",
+                     up_pressed, down_pressed, a_pressed, start_pressed);
         }
-        vTaskDelay(pdMS_TO_TICKS(150)); // Debounce delay
-    }
 
-    // Handle A button - select ROM
-    if (joypad->buttonAPressed() || joypad->buttonStartPressed()) {
-        rom_selected = true;
-        ESP_LOGI(TAG, "ROM confirmed: %s", roms_names_list[selected_rom_idx].c_str());
-        vTaskDelay(pdMS_TO_TICKS(200)); // Debounce delay
-    }
-}
-
-void Menu::draw() {
-    static bool first_call = true;
-    if (first_call) {
-        ESP_LOGI(TAG, "draw() called for the first time");
-        first_call = false;
-    }
-
-    // Clear framebuffer
-    clear_framebuffer(framebuffer, COLOR_BLACK);
-
-    // Draw title
-    draw_text(framebuffer, 8, 8, "SELECT ROM", COLOR_WHITE);
-
-    // Calculate visible ROM range (show max 12 items on screen)
-    constexpr int MAX_VISIBLE_ITEMS = 12;
-    constexpr int ITEM_HEIGHT = 10;
-    constexpr int START_Y = 24;
-
-    int scroll_offset = 0;
-    if (rom_count > MAX_VISIBLE_ITEMS) {
-        // Scroll to keep selected item visible
-        if (selected_rom_idx >= MAX_VISIBLE_ITEMS / 2) {
-            scroll_offset = selected_rom_idx - MAX_VISIBLE_ITEMS / 2;
-            if (scroll_offset + MAX_VISIBLE_ITEMS > rom_count) {
-                scroll_offset = rom_count - MAX_VISIBLE_ITEMS;
+        // Detect rising edge (button just pressed, not held)
+        if (up_pressed && !prev_up)
+        {
+            if (selected_rom_idx > 0)
+            {
+                selected_rom_idx--;
+                ESP_LOGI(TAG, "Selected: %d", selected_rom_idx);
+                needs_redraw = true;
             }
         }
-    }
-
-    // Draw ROM list
-    int visible_count = (rom_count < MAX_VISIBLE_ITEMS) ? rom_count : MAX_VISIBLE_ITEMS;
-    for (int i = 0; i < visible_count; i++) {
-        int rom_idx = i + scroll_offset;
-        int y_pos = START_Y + (i * ITEM_HEIGHT);
-
-        // Determine if this is the selected item
-        bool is_selected = (rom_idx == selected_rom_idx);
-        uint8_t text_color = is_selected ? COLOR_YELLOW : COLOR_WHITE;
-
-        // Draw cursor for selected item
-        if (is_selected) {
-            draw_char(framebuffer, 0, y_pos, '>', COLOR_YELLOW);
+        else if (down_pressed && !prev_down)
+        {
+            if (selected_rom_idx < rom_count - 1)
+            {
+                selected_rom_idx++;
+                ESP_LOGI(TAG, "Selected: %d", selected_rom_idx);
+                needs_redraw = true;
+            }
         }
 
-        // Draw ROM name (truncate if too long)
-        std::string rom_name = roms_names_list[rom_idx];
-        if (rom_name.length() > 18) {
-            rom_name = rom_name.substr(0, 15) + "...";
+        if ((a_pressed && !prev_a) || (start_pressed && !prev_start))
+        {
+            rom_selected = true;
+            ESP_LOGI(TAG, "ROM confirmed: %s", roms_names_list[selected_rom_idx].c_str());
         }
-        draw_text(framebuffer, 8, y_pos, rom_name, text_color);
+
+        // Update previous states
+        prev_up = up_pressed;
+        prev_down = down_pressed;
+        prev_a = a_pressed;
+        prev_start = start_pressed;
     }
 
-    // Draw scroll indicator if needed
-    if (rom_count > MAX_VISIBLE_ITEMS) {
-        int scroll_bar_height = (MAX_VISIBLE_ITEMS * 100) / rom_count;
-        int scroll_bar_pos = (scroll_offset * 100) / (rom_count - MAX_VISIBLE_ITEMS);
-
-        // Draw simple scroll indicator at the bottom
-        if (scroll_offset > 0) {
-            draw_char(framebuffer, LCD_WIDTH / 2 - 4, LCD_HEIGHT - 10, '^', COLOR_LIGHT_GRAY);
+    void Menu::draw()
+    {
+        // Don't draw if ROM is already selected
+        if (rom_selected)
+        {
+            return;
         }
-        if (scroll_offset + MAX_VISIBLE_ITEMS < rom_count) {
-            draw_char(framebuffer, LCD_WIDTH / 2 - 4, LCD_HEIGHT - 2, 'v', COLOR_LIGHT_GRAY);
+
+        // Only redraw if needed
+        if (!needs_redraw)
+        {
+            return;
         }
+
+        ESP_LOGI(TAG, "Drawing menu (needs_redraw=true, rom_count=%d, selected_idx=%d)...", rom_count, selected_rom_idx);
+
+        // Effacer le framebuffer RGB565
+        clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * MENU_HEIGHT, RGB565_BLACK);
+
+        // Dessiner le titre
+        draw_text_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                         20, 20, "SELECT ROM", RGB565_WHITE);
+
+        ESP_LOGI(TAG, "Title drawn at (20,20), color=0x%04X", RGB565_WHITE);
+
+        // Calculer la zone visible (max 30 items sur un écran 240×320)
+        constexpr uint8_t MAX_VISIBLE_ITEMS = 30;
+        constexpr uint8_t ITEM_HEIGHT = 10;
+        constexpr uint8_t START_Y = 40;
+
+        int scroll_offset = 0;
+        if (rom_count > MAX_VISIBLE_ITEMS)
+        {
+            if (selected_rom_idx >= MAX_VISIBLE_ITEMS / 2)
+            {
+                scroll_offset = selected_rom_idx - MAX_VISIBLE_ITEMS / 2;
+                if (scroll_offset + MAX_VISIBLE_ITEMS > rom_count)
+                {
+                    scroll_offset = rom_count - MAX_VISIBLE_ITEMS;
+                }
+            }
+        }
+
+        // Dessiner la liste des ROMs
+        int visible_count = (rom_count < MAX_VISIBLE_ITEMS) ? rom_count : MAX_VISIBLE_ITEMS;
+        for (int i = 0; i < visible_count; i++)
+        {
+            int rom_idx = i + scroll_offset;
+            int y_pos = START_Y + (i * ITEM_HEIGHT);
+
+            bool is_selected = (rom_idx == selected_rom_idx);
+            uint16_t text_color = is_selected ? RGB565_YELLOW : RGB565_WHITE;
+
+            // Curseur pour l'item sélectionné
+            if (is_selected)
+            {
+                draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                                 10, y_pos, '>', RGB565_YELLOW);
+            }
+            // Nom du ROM (tronquer si trop long)
+            std::string rom_name = roms_names_list[rom_idx];
+            if (rom_name.length() > 28)
+            { // Plus d'espace maintenant !
+                rom_name = rom_name.substr(0, 25) + "...";
+            }
+            draw_text_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                             20, y_pos, rom_name, text_color);
+        }
+
+        // Indicateurs de scroll
+        if (rom_count > MAX_VISIBLE_ITEMS)
+        {
+            if (scroll_offset > 0)
+            {
+                draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                                 MENU_WIDTH / 2 - 4, 30, '^', RGB565_LIGHT_GRAY);
+            }
+            if (scroll_offset + MAX_VISIBLE_ITEMS < rom_count)
+            {
+                draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                                 MENU_WIDTH / 2 - 4, MENU_HEIGHT - 10, 'v', RGB565_LIGHT_GRAY);
+            }
+        }
+
+        // Afficher directement le framebuffer RGB565
+        ESP_LOGI(TAG, "Sending %dx%d framebuffer to display...", MENU_WIDTH, MENU_HEIGHT);
+        display.renderFrameRGB565(framebuffer, MENU_WIDTH, MENU_HEIGHT, 0, 0);
+
+        // Mark as drawn
+        needs_redraw = false;
+        prev_selected_rom_idx = selected_rom_idx;
+        ESP_LOGI(TAG, "Menu drawn successfully, needs_redraw=false");
     }
-
-    // Render the framebuffer to the LCD display
-    static bool first_render = true;
-    if (first_render) {
-        ESP_LOGI(TAG, "About to call display.renderFrame()...");
-        first_render = false;
-    }
-
-    display.renderFrame(framebuffer);
-
-    static bool first_render_complete = true;
-    if (first_render_complete) {
-        ESP_LOGI(TAG, "display.renderFrame() completed");
-        first_render_complete = false;
-    }
-}
-
 } // namespace display::menu

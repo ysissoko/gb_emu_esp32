@@ -5,6 +5,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include "esp_attr.h"
 
 namespace controller {
     class Joypad;
@@ -61,12 +62,12 @@ namespace memory
         ~MemoryBus();
 
         // 8-bit read/write operations
-        uint8_t read(uint16_t address) const;
-        void write(uint16_t address, uint8_t value);
+        IRAM_ATTR uint8_t read(uint16_t address) const;
+        IRAM_ATTR void write(uint16_t address, uint8_t value);
 
         // 16-bit read/write operations (little-endian)
-        uint16_t read16(uint16_t address) const;
-        void write16(uint16_t address, uint16_t value);
+        IRAM_ATTR uint16_t read16(uint16_t address) const;
+        IRAM_ATTR void write16(uint16_t address, uint16_t value);
 
         // Load ROM into memory
         void loadROM(const uint8_t* data, size_t size);

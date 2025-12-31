@@ -17,14 +17,9 @@ static const char *TAG = "storage";
 
 namespace storage
 {
-
-    Storage::Storage(const std::string &mount_path) : mount_path(mount_path)
+    int list_roms(std::array<std::string, MAX_ROMS> &roms_names_list)
     {
-    }
-
-    int Storage::list_roms(std::array<std::string, MAX_ROMS> &roms_names_list)
-    {
-        std::string roms_dir = mount_path + "/" + ROMS_PATH;
+        std::string roms_dir = MOUNT_PATH + "/" + ROMS_PATH;
         ESP_LOGI(TAG, "Looking for ROMs in: %s", roms_dir.c_str());
         DIR *dir = opendir(roms_dir.c_str());
         if (!dir)
@@ -61,9 +56,10 @@ namespace storage
                 continue;
             }
 
-            // Skip FAT32 short name artifacts (8.3 format duplicates starting with underscore)
+            // Skip FAT32 short name artifacts (8.3 format duplicates)
             // These are auto-generated entries for long filenames and should be ignored
-            if (name[0] == '_' && name.find('~') != std::string::npos)
+            // They contain tilde (~) or start with underscore (_)
+            if (name.find('~') != std::string::npos || name[0] == '_')
             {
                 ESP_LOGD(TAG, "Skipping FAT32 short name artifact: %s", name.c_str());
                 continue;
@@ -143,7 +139,7 @@ namespace storage
         return -1;
     }
 
-    esp_err_t Storage::init(const char *path)
+    esp_err_t init()
     {
         // CS SD
         gpio_set_direction(SD_GPIO_CS, GPIO_MODE_OUTPUT);
@@ -158,7 +154,10 @@ namespace storage
         esp_vfs_fat_sdmmc_mount_config_t mount_config = {
             .format_if_mount_failed = false,
             .max_files = 5,
-            .allocation_unit_size = 16 * 1024};
+            .allocation_unit_size = 16 * 1024,
+            .disk_status_check_enable = false,
+            .use_one_fat = false
+        };
 
         sdmmc_card_t *card;
         sdmmc_host_t host = SDSPI_HOST_DEFAULT();
@@ -167,7 +166,7 @@ namespace storage
 
         ESP_LOGW(TAG, "SD_GPIO_CS = %d", SD_GPIO_CS);
         esp_err_t ret = esp_vfs_fat_sdspi_mount(
-            path,
+            MOUNT_PATH.c_str(),
             &host,
             &slot_config,
             &mount_config,
@@ -179,8 +178,7 @@ namespace storage
             return ret;
         }
 
-        mount_path = path;
-        ESP_LOGI(TAG, "SD card mounted at %s", path);
+        ESP_LOGI(TAG, "SD card mounted at %s", MOUNT_PATH);
         return ESP_OK;
     }
 

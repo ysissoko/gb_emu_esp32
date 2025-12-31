@@ -1,14 +1,16 @@
 #pragma once
 
-#include "display.hpp"
+#include "lcd_display.hpp"
+#include "memory_bus.hpp"
+#include "esp_attr.h"
 
 #include <cstdint>
 #include <array>
 #include <memory>
 
-namespace memory {
-    class MemoryBus;
-}
+// Branch prediction hints (from cpu.hpp)
+#define LIKELY(x)   __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 namespace ppu
 {
@@ -54,17 +56,30 @@ namespace ppu
     constexpr int MAX_SPRITES = 40;
     constexpr int MAX_SPRITES_PER_LINE = 10;
 
+    // Cached PPU register context for scanline rendering (avoid repeated MMU reads)
+    struct ScanlineContext
+    {
+        uint8_t lcdc;   // LCD Control
+        uint8_t scy;    // Scroll Y
+        uint8_t scx;    // Scroll X
+        uint8_t bgp;    // Background palette
+        uint8_t wy;     // Window Y
+        uint8_t wx;     // Window X
+        uint8_t obp0;   // Sprite palette 0
+        uint8_t obp1;   // Sprite palette 1
+    };
+
     class PPU
     {
     public:
-        PPU(memory::MemoryBus&, std::unique_ptr<display::Display>);
+        PPU(memory::MemoryBus&, std::shared_ptr<display::LCDDisplay>);
         ~PPU();
 
         // Update PPU state for given number of cycles
-        void step(uint8_t cycles);
+        IRAM_ATTR void step(uint8_t cycles);
 
-        // Get framebuffer pointer for rendering
-        const std::array<uint8_t, display::LCD_WIDTH * display::LCD_HEIGHT>& getFramebuffer() const { return framebuffer; }
+        // Get framebuffer pointer for rendering (8-bit palette format)
+        const uint8_t* getFramebuffer() const { return framebuffer; }
 
         // Get current scanline
         uint8_t getCurrentLine() const { return ly; }
@@ -76,8 +91,9 @@ namespace ppu
     private:
         memory::MemoryBus& mmu;
 
-        // Framebuffer: each byte represents a pixel (0-3 for the 4 gray shades)
-        std::array<uint8_t, display::LCD_WIDTH  * display::LCD_HEIGHT> framebuffer;
+        // Framebuffer: 8-bit palette indices (0-3 for 4 gray shades)
+        // Allocated in PSRAM to save precious internal SRAM
+        uint8_t* framebuffer{nullptr};
 
         // PPU state
         Mode mode;
@@ -92,24 +108,34 @@ namespace ppu
 
         // Helper functions
         void renderScanline();
-        void renderBackground();
-        void renderWindow();
+        void renderBackground(const ScanlineContext& ctx);
+        void renderWindow(const ScanlineContext& ctx);
         void scanOAM();
-        void renderSprites();
+        void renderSprites(const ScanlineContext& ctx);
         void setMode(Mode new_mode);
         void updateLY(uint8_t new_ly);
         display::Color getPixelColor(uint8_t tile_index, uint8_t x, uint8_t y);
 
-        std::unique_ptr<display::Display> display{nullptr};
+        std::shared_ptr<display::LCDDisplay> display{nullptr};
 
-        // Register read functions
-        uint8_t readLCDC() const;
-        uint8_t readSCY() const;
-        uint8_t readSCX() const;
-        uint8_t readBGP() const;   // Background palette
-        uint8_t readWY() const;    // Window Y position
-        uint8_t readWX() const;    // Window X position
-        uint8_t readOBP0() const;  // Sprite palette 0
-        uint8_t readOBP1() const;  // Sprite palette 1
+        // Register read functions - IRAM for fast access (hot path)
+        IRAM_ATTR inline uint8_t readLCDC() const;
+        IRAM_ATTR inline uint8_t readSCY() const;
+        IRAM_ATTR inline uint8_t readSCX() const;
+        IRAM_ATTR inline uint8_t readBGP() const;   // Background palette
+        IRAM_ATTR inline uint8_t readWY() const;    // Window Y position
+        IRAM_ATTR inline uint8_t readWX() const;    // Window X position
+        IRAM_ATTR inline uint8_t readOBP0() const;  // Sprite palette 0
+        IRAM_ATTR inline uint8_t readOBP1() const;  // Sprite palette 1
     };
+
+    // Inline implementations (must be in header for inline to work)
+    inline uint8_t PPU::readLCDC() const { return mmu.read(0xFF40); }
+    inline uint8_t PPU::readSCY() const { return mmu.read(0xFF42); }
+    inline uint8_t PPU::readSCX() const { return mmu.read(0xFF43); }
+    inline uint8_t PPU::readBGP() const { return mmu.read(0xFF47); }
+    inline uint8_t PPU::readWY() const { return mmu.read(0xFF4A); }
+    inline uint8_t PPU::readWX() const { return mmu.read(0xFF4B); }
+    inline uint8_t PPU::readOBP0() const { return mmu.read(0xFF48); }
+    inline uint8_t PPU::readOBP1() const { return mmu.read(0xFF49); }
 }

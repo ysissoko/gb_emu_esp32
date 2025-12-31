@@ -3,7 +3,6 @@
 #include "lcd_display.hpp"
 #include "joypad.hpp"
 #include "storage.hpp"
-#include "text_renderer.hpp"
 #include <memory>
 #include <string>
 
@@ -11,29 +10,42 @@ namespace display::menu {
     class Menu {
         public:
             Menu(display::LCDDisplay& display,
-                 std::shared_ptr<controller::Joypad> joypad,
-                 storage::Storage& storage)
-                : display(display), joypad(joypad), storage(storage) {}
+                 std::shared_ptr<controller::Joypad> joypad)
+                : display(display), joypad(joypad) {}
 
-            ~Menu() = default;
+            ~Menu() {
+                if (framebuffer) {
+                    free(framebuffer);
+                    framebuffer = nullptr;
+                }
+            }
 
-            // Running loop that displays and refreshes the screen until ROM is selected
-            // Returns the path to the selected ROM
-            std::string loop();
+            void init();
+            void update();
+            void draw();
+
+            bool isRomSelected() const { return rom_selected; }
+            std::string getSelectedRomPath() const;
 
         private:
             void handleInputs();
-            void draw();
 
             display::LCDDisplay& display;
             std::shared_ptr<controller::Joypad> joypad;
-            storage::Storage& storage;
 
             std::array<std::string, storage::MAX_ROMS> roms_names_list{};
             int rom_count{0};
             int selected_rom_idx{0};
+            int prev_selected_rom_idx{-1};
             bool rom_selected{false};
+            bool initialized{false};
+            bool needs_redraw{true};
 
-            std::array<uint8_t, display::LCD_WIDTH * display::LCD_HEIGHT> framebuffer{};
+            // Framebuffer natif RGB565 pour le menu - réduit pour économiser la RAM
+            // On utilise un framebuffer de seulement 80 lignes qu'on redessine en 4 passes
+            static constexpr int MENU_WIDTH = 240;
+            static constexpr int MENU_HEIGHT = 320;
+            static constexpr int FB_CHUNK_HEIGHT = 80;  // Framebuffer par morceaux
+            uint16_t* framebuffer{nullptr};  // Allocated dynamically (240x80 instead of 240x320)
     };
 }
