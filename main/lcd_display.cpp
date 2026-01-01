@@ -207,24 +207,29 @@ namespace display
 
         int buf = 0;
         bool first = true;
-
+        int source_y = 0; // Position réelle dans le buffer source
+        
         for (int y = 0; y < draw_height; y += CHUNK_LINES)
         {
 
             int lines = std::min(CHUNK_LINES, draw_height - y);
-
-            const uint16_t *src = buffer + y * width;
+            
+            // CORRECTION CRITIQUE: Utiliser source_y pour le calcul du buffer
+            const uint16_t *src = buffer + source_y * width;
             size_t chunk_bytes = draw_width * lines * sizeof(uint16_t);
-
+            
             // Préparer le buffer courant PENDANT que le DMA précédent tourne
             memcpy(rgb565_chunk[buf], src, chunk_bytes);
-
-            // Si ce n'est pas le premier chunk, attendre que l'autre buffer soit libéré
+            
+            // Si ce N'EST PAS le premier chunk, attendre que l'autre buffer soit libéré
             if (!first)
             {
                 waitForTransfer();
             }
             first = false;
+            
+            // AVANCER source_y pour le prochain chunk
+            source_y += lines;
 
             esp_err_t ret = esp_lcd_panel_draw_bitmap(
                 panel,

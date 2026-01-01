@@ -103,8 +103,10 @@ namespace cpu
             }
 
             // Yield UNE FOIS par scanline
-            taskYIELD();
+            // taskYIELD();
         }
+
+        vTaskDelay(1);
 
         if (do_profile)
         {

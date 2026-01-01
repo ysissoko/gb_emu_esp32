@@ -100,8 +100,18 @@ namespace memory
         }
 
     private:
-        // ROM - 32KB (0x0000-0x7FFF)
+        // ROM - 32KB (0x0000-0x7FFF) + MBC support
         std::array<uint8_t, 0x8000> rom;
+        
+        // MBC (Memory Bank Controller) registers
+        uint8_t mbc_type{0};     // 0=ROM only, 1=MBC1, 2=MBC2, 3=MBC3, 5=MBC5
+        uint8_t rom_bank{0};     // Current ROM bank (0-255 for MBC1)
+        bool ram_enabled{false};    // External RAM enabled
+        uint8_t ram_bank{0};     // Current RAM bank (0-15)
+        uint8_t mbc_mode{0};     // MBC1 mode register
+        
+        // Additional ROM storage for MBC (up to 1MB for now)
+        std::array<uint8_t, 0x100000> rom_extended;
 
         // Video RAM - 8KB (0x8000-0x9FFF)
         std::array<uint8_t, 0x2000> vram;

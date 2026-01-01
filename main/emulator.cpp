@@ -64,7 +64,8 @@ namespace emulator
         // Show menu and load ROM (only once at startup)
         if (!emulator->rom_loaded)
         {
-            std::string rom_path = emulator->showMenuAndSelectROM();
+            // TODO re enable when menu selection is fixed
+            std::string rom_path = "/sdcard/roms/Dr. Mario.gb";//emulator->showMenuAndSelectROM();
 
             if (!rom_path.empty())
             {
@@ -96,47 +97,55 @@ namespace emulator
         ESP_LOGI(TAG, "Running on CPU core: %d", xPortGetCoreID());
 
         int frame_count = 0;
-        TickType_t last_wake_time = xTaskGetTickCount();
 
         while (true)
         {
-            int64_t start = esp_timer_get_time();
+            int64_t frame_start = esp_timer_get_time();
+            
+            // Frame skipping: use XOR for optimal performance (1/2 frame skip)
+            emulator->frame_skip_bit ^= 0x01;
+            bool should_skip = emulator->frame_skip_bit;
 
-            // Run one frame of the Game Boy
+            // Set PPU rendering flag based on skip decision (affects render only!)
+            emulator->ppu->setShouldRender(!should_skip);
+
+            // Always run Game Boy frame (CPU + PPU + APU)
             int64_t emu_start = esp_timer_get_time();
             emulator->cpu->run_frame();
+            
+            // Single frame timing (constant FRAME_US)
+            int64_t elapsed = esp_timer_get_time() - frame_start;
+            int64_t sleep_us = FRAME_US - elapsed;
+            
+            if (sleep_us > 1000) {
+                vTaskDelay(pdMS_TO_TICKS(sleep_us / 1000));
+            } else {
+                vTaskDelay(1);
+            }
             int64_t emu_end = esp_timer_get_time();
+            
             int64_t emu_time = emu_end - emu_start;
 
-            frame_count++;
+            // Mise à jour du retard
+            emulator->lag_us += emu_time - FRAME_US;
 
-            // Log FPS every 60 frames (~1 second) avec profiling détaillé
-            if (frame_count % 60 == 0)
-            {
-                int64_t frame_time = esp_timer_get_time() - start;
-                float fps = 1000000.0f / frame_time;
-                float target_fps = 60.0f;
-                int64_t target_frame_time = 16743; // 60 FPS target (1000000 / 60)
+            if (emulator->lag_us < -FRAME_US)
+                emulator->lag_us = -FRAME_US; // clamp avance
+            if (emulator->lag_us > 2 * FRAME_US)
+                emulator->lag_us = 2 * FRAME_US; // clamp retard
 
-                ESP_LOGI(TAG, "Frame %d | Time: %lld us (%.1f FPS) | Target: %lld us (%.0f FPS) | Emulation: %lld us | Overhead: %lld us | Heap: %lu",
-                         frame_count, frame_time, fps, target_frame_time, target_fps,
-                         emu_time, frame_time - emu_time, esp_get_free_heap_size());
-            }
+            // Stats
+            if (!should_skip)
+                frame_count++;
 
-            // Maintain timing - always yield to prevent watchdog
-            int64_t elapsed = esp_timer_get_time() - start;
-            int64_t delay_us = FRAME_US - elapsed;
+            // Synchronisation temps réel (TOUJOURS 1 frame)
+            elapsed = esp_timer_get_time() - frame_start;
+            sleep_us = FRAME_US - elapsed;
 
-            if (delay_us > 1000)
-            {
-                // Délai normal - libérer le CPU
-                vTaskDelay(pdMS_TO_TICKS(delay_us / 1000));
-            }
+            if (sleep_us > 1000)
+                vTaskDelay(pdMS_TO_TICKS(sleep_us / 1000));
             else
-            {
-                // Toujours yield, même si on est en retard
-                taskYIELD();
-            }
+                vTaskDelay(1);
         }
     }
 
@@ -234,8 +243,7 @@ namespace emulator
             this,
             5,
             nullptr,
-            1
-        );
+            1);
 
         if (result == pdPASS)
         {
@@ -269,6 +277,23 @@ namespace emulator
         }
 
         ESP_LOGI(TAG, "Loaded ROM: %s (%zu bytes)", rom_path.c_str(), rom_size);
+
+        // Validate ROM size before loading (prevent crashes)
+        if (rom_size > 0x8000)
+        { // 32KB max current support
+            ESP_LOGW(TAG, "ROM too large: %zu bytes, max supported: 32KB (0x8000)", rom_size);
+            ESP_LOGW(TAG, "This ROM requires bank switching support - not yet implemented");
+            ESP_LOGW(TAG, "Cannot load this ROM - will crash. Aborting.");
+            free(rom_buffer);
+            return;
+        }
+
+        // Additional safety check
+        if (rom_buffer == nullptr || rom_size == 0)
+        {
+            ESP_LOGE(TAG, "Invalid ROM data: null pointer or zero size");
+            return;
+        }
 
         // Load ROM into memory bus
         loadROM(rom_buffer, rom_size);

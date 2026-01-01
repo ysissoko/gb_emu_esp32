@@ -93,6 +93,10 @@ namespace ppu
         // Check if frame is ready for display
         bool isFrameReady() const { return frame_ready; }
         void clearFrameReady() { frame_ready = false; }
+        
+        // Control frame rendering for frame skipping
+        inline void setShouldRender(bool should_render) { should_render_frame = should_render; }
+        inline bool getShouldRender() const { return should_render_frame; }
 
         // Pipeline asynchrone methods
         static void render_task(void* arg);
@@ -147,6 +151,7 @@ namespace ppu
         uint16_t mode_cycles;
         uint8_t ly;  // Current scanline (0-153)
         bool frame_ready;
+        bool should_render_frame;  // Control frame rendering for skipping
         uint8_t window_line_counter;  // Internal window line counter
 
         // Sprite buffer for current scanline

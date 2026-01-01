@@ -143,11 +143,13 @@ inline void draw_char_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
     }
 }
 
-// Dessiner du texte en RGB565
+// Dessiner du texte en RGB565 (avec protection contre dépassement)
 inline void draw_text_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
                              int x, int y, const std::string& text, uint16_t color) {
     int current_x = x;
     for (char c : text) {
+        if (current_x >= fb_width - 8) break; // Stop si hors écran
+        if (y + 8 >= fb_height) break;     // Stop si hors écran vertical
         draw_char_rgb565(framebuffer, fb_width, fb_height, current_x, y, c, color);
         current_x += 8;
     }

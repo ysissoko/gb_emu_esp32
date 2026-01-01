@@ -149,6 +149,8 @@ namespace display::menu
         // Don't draw if ROM is already selected
         if (rom_selected)
         {
+            // Effacer le framebuffer RGB565
+            clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * MENU_HEIGHT, RGB565_BLACK);
             return;
         }
 
@@ -177,9 +179,9 @@ namespace display::menu
         int scroll_offset = 0;
         if (rom_count > MAX_VISIBLE_ITEMS)
         {
-            if (selected_rom_idx >= MAX_VISIBLE_ITEMS / 2)
+            if (selected_rom_idx >= (MAX_VISIBLE_ITEMS >> 1))
             {
-                scroll_offset = selected_rom_idx - MAX_VISIBLE_ITEMS / 2;
+                scroll_offset = selected_rom_idx - (MAX_VISIBLE_ITEMS >> 1);
                 if (scroll_offset + MAX_VISIBLE_ITEMS > rom_count)
                 {
                     scroll_offset = rom_count - MAX_VISIBLE_ITEMS;
@@ -203,11 +205,14 @@ namespace display::menu
                 draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
                                  10, y_pos, '>', RGB565_YELLOW);
             }
-            // Nom du ROM (tronquer si trop long)
+            // Nom du ROM (tronquer si trop long - adapter pour largeur réelle)
             std::string rom_name = roms_names_list[rom_idx];
-            if (rom_name.length() > 28)
-            { // Plus d'espace maintenant !
-                rom_name = rom_name.substr(0, 25) + "...";
+            int max_chars = (MENU_WIDTH - 20) / 8; // 8 pixels par caractère, marge de 20px
+            if (max_chars < 10) max_chars = 10; // Minimum absolu
+            
+            if (rom_name.length() > max_chars && rom_name.length() > 8)
+            {
+                rom_name = rom_name.substr(0, max_chars - 3) + "...";
             }
             draw_text_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
                              20, y_pos, rom_name, text_color);
@@ -230,7 +235,9 @@ namespace display::menu
 
         // Afficher directement le framebuffer RGB565
         ESP_LOGI(TAG, "Sending %dx%d framebuffer to display...", MENU_WIDTH, MENU_HEIGHT);
+        ESP_LOGI(TAG, "Framebuffer address: %p, first pixel: 0x%04X", framebuffer, framebuffer ? framebuffer[0] : 0);
         display.renderFrameRGB565(framebuffer, MENU_WIDTH, MENU_HEIGHT, 0, 0);
+        ESP_LOGI(TAG, "Framebuffer sent to display");
 
         // Mark as drawn
         needs_redraw = false;

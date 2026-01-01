@@ -1,5 +1,6 @@
 #include "ppu.hpp"
 #include "memory_bus.hpp"
+#include "text_renderer.hpp"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -27,6 +28,7 @@ namespace ppu
           mode_cycles(0),
           ly(0),
           frame_ready(false),
+          should_render_frame(true),
           window_line_counter(0),
           visible_sprite_count(0),
           display(std::move(display))
@@ -469,8 +471,26 @@ namespace ppu
 
     void PPU::queue_frame_for_rendering()
     {
-        if (!frame_queue)
+        if (!frame_queue || !should_render_frame)
             return;
+
+        // Simple line buffer approach - no dynamic allocation
+        static uint16_t line_buffer[160]; // One scanline in internal RAM
+        // Process scanline by scanline (line-by-line rendering)
+        for (int line = 0; line < 144; line++) {
+            // Clear line buffer
+            memset(line_buffer, 0, sizeof(line_buffer));
+            
+            // Simple scanline processing (background only for now)
+            for (int x = 0; x < 160; x++) {
+                line_buffer[x] = 0x0000; // Simple black background (RGB565)
+            }
+            
+            // Copy line to framebuffer
+            if (should_render_frame) {
+                memcpy(framebuffer + line * 160, line_buffer, sizeof(line_buffer));
+            }
+        }
 
         // Envoie le pointeur du framebuffer courant (sans copie)
         uint16_t *fb_ptr = framebuffer;

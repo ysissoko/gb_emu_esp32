@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
 #include "driver/sdmmc_host.h"
 #include "driver/sdspi_host.h"
@@ -103,11 +104,28 @@ namespace storage
         long fsize = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        // Allocate buffer
-        *buffer = (uint8_t *)malloc(fsize);
+        // Validate file size (prevent excessive allocations)
+        if (fsize <= 0 || fsize > 8 * 1024 * 1024) {  // Max 8MB ROM
+            ESP_LOGE(TAG, "Invalid ROM size: %ld bytes", fsize);
+            fclose(f);
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        // Check available heap before allocation
+        size_t free_heap = esp_get_free_heap_size();
+        ESP_LOGI(TAG, "Free heap before allocation: %zu bytes, ROM size: %ld bytes", free_heap, fsize);
+        
+        if (fsize > free_heap) {
+            ESP_LOGE(TAG, "Not enough memory: need %ld bytes, available %zu bytes", fsize, free_heap);
+            fclose(f);
+            return ESP_ERR_NO_MEM;
+        }
+
+        // Allocate buffer with safety margin
+        *buffer = (uint8_t *)heap_caps_malloc(fsize, MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
         if (*buffer == NULL)
         {
-            ESP_LOGE(TAG, "Failed to allocate memory");
+            ESP_LOGE(TAG, "Failed to allocate %ld bytes for ROM", fsize);
             fclose(f);
             return ESP_ERR_NO_MEM;
         }

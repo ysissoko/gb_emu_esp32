@@ -2,6 +2,7 @@
 #include "joypad.hpp"
 #include "timer.hpp"
 #include "serial.hpp"
+#include "esp_log.h"
 #include <cstring>
 
 namespace memory
@@ -198,10 +199,53 @@ namespace memory
         write(address + 1, msb);
     }
 
-    void MemoryBus::loadROM(const uint8_t* data, size_t size)
+    void memory::MemoryBus::loadROM(const uint8_t* data, size_t size)
     {
+        // Detect MBC type from ROM header
+        if (size >= 0x8000) {
+            uint8_t cart_type = data[0x0147]; // Cartridge type byte
+            if (cart_type >= 0x01 && cart_type <= 0x03) {
+                mbc_type = cart_type; // MBC1-3
+                ESP_LOGI("MemoryBus", "MBC%d detected, ROM size: %zu bytes", mbc_type, size);
+            } else if (cart_type >= 0x05 && cart_type <= 0x06) {
+                mbc_type = 5; // MBC5
+                ESP_LOGI("MemoryBus", "MBC5 detected, ROM size: %zu bytes", mbc_type, size);
+            } else {
+                mbc_type = 0; // Standard ROM
+                ESP_LOGI("MemoryBus", "Standard ROM detected, size: %zu bytes", size);
+            }
+        } else {
+            mbc_type = 0; // Standard ROM
+            ESP_LOGI("MemoryBus", "Standard ROM detected, size: %zu bytes", size);
+        }
+        
+        // Load ROM into base 32KB (0x0000-0x7FFF)
         size_t copy_size = (size > rom.size()) ? rom.size() : size;
         std::memcpy(rom.data(), data, copy_size);
+        
+        // Load additional banks into extended storage
+        if (size > rom.size()) {
+            size_t extra_size = size - rom.size();
+            size_t banks_to_copy = (extra_size > rom_extended.size()) ? rom_extended.size() : extra_size;
+            std::memcpy(rom_extended.data(), data + rom.size(), banks_to_copy);
+            ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks", banks_to_copy / 0x4000);
+        } else {
+            mbc_type = 0; // Standard ROM
+            ESP_LOGI("MemoryBus", "Standard ROM detected, size: %zu bytes", size);
+        }
+        
+        // Load ROM into base 32KB
+        copy_size = (size > rom.size()) ? rom.size() : size;
+        std::memcpy(rom.data(), data, copy_size);
+        
+        // Load additional banks into extended storage
+        if (size > rom.size()) {
+            size_t extra_size = size - rom.size();
+            size_t banks_to_copy = (extra_size > 0x100000) ? 0x100000 : extra_size;
+            banks_to_copy = (banks_to_copy > rom_extended.size()) ? rom_extended.size() : banks_to_copy;
+            std::memcpy(rom_extended.data(), data + rom.size(), banks_to_copy);
+            ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks", banks_to_copy / 0x4000);
+        }
     }
 
     void MemoryBus::stepTimer(uint8_t cycles)
