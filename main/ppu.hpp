@@ -8,6 +8,12 @@
 #include <array>
 #include <memory>
 
+// FreeRTOS includes for pipeline async
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+
 // Branch prediction hints (from cpu.hpp)
 #define LIKELY(x)   __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -78,8 +84,8 @@ namespace ppu
         // Update PPU state for given number of cycles
         IRAM_ATTR void step(uint8_t cycles);
 
-        // Get framebuffer pointer for rendering (8-bit palette format)
-        const uint8_t* getFramebuffer() const { return framebuffer; }
+        // Get framebuffer pointer for rendering (RGB565 format)
+        const uint16_t* getFramebuffer() const { return framebuffer; }
 
         // Get current scanline
         uint8_t getCurrentLine() const { return ly; }
@@ -88,12 +94,53 @@ namespace ppu
         bool isFrameReady() const { return frame_ready; }
         void clearFrameReady() { frame_ready = false; }
 
+        // Pipeline asynchrone methods
+        static void render_task(void* arg);
+        void queue_frame_for_rendering();
+        bool init_pipeline();
+        
     private:
         memory::MemoryBus& mmu;
+        const uint8_t* vram{nullptr};
+        const uint8_t* oam{nullptr};
 
-        // Framebuffer: 8-bit palette indices (0-3 for 4 gray shades)
+        // Framebuffer: Direct RGB565 (no conversion needed!)
         // Allocated in PSRAM to save precious internal SRAM
-        uint8_t* framebuffer{nullptr};
+        uint16_t* framebuffer{nullptr};
+        
+        // Optimized palette lookup table (BGR565 for ST7789V)
+        static constexpr uint16_t GB_PALETTE_BGR565[4] = {
+            0xFFFF, // WHITE
+            0xC618, // LIGHT_GRAY  
+            0x632C, // DARK_GRAY
+            0x0000  // BLACK
+        };
+        
+        // Tile cache L1 pour optimiser les accès VRAM
+        struct TileCache {
+            uint16_t tile_data[384][8][2];  // 384 tiles max, 8 lignes, 2 octets/ligne
+            bool valid[384]{false};
+            
+            void update_tile(uint8_t tile_idx, const uint8_t* data) {
+                // Préconvertir en RGB565
+                for (int y = 0; y < 8; y++) {
+                    uint8_t byte1 = data[y * 2];
+                    uint8_t byte2 = data[y * 2 + 1];
+                    tile_data[tile_idx][y][0] = byte1;
+                    tile_data[tile_idx][y][1] = byte2;
+                }
+                valid[tile_idx] = true;
+            }
+            
+            bool get_tile_data(uint8_t tile_idx, uint8_t line, uint8_t& byte1, uint8_t& byte2) {
+                if (valid[tile_idx] && line < 8) {
+                    byte1 = tile_data[tile_idx][line][0];
+                    byte2 = tile_data[tile_idx][line][1];
+                    return true;
+                }
+                return false;
+            }
+        } tile_cache;
 
         // PPU state
         Mode mode;
@@ -118,6 +165,9 @@ namespace ppu
 
         std::shared_ptr<display::LCDDisplay> display{nullptr};
 
+        // Pipeline asynchrone - queue de frames (style Espeon)
+        static QueueHandle_t frame_queue;
+        
         // Register read functions - IRAM for fast access (hot path)
         IRAM_ATTR inline uint8_t readLCDC() const;
         IRAM_ATTR inline uint8_t readSCY() const;

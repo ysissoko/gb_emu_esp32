@@ -2,7 +2,9 @@
 
 #include "driver/gpio.h"
 #include "esp_lcd_panel_vendor.h"
-
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "esp_attr.h"
 #include <array>
 
 namespace display
@@ -17,6 +19,10 @@ namespace display
 
     constexpr int LCD_WIDTH = 160;
     constexpr int LCD_HEIGHT = 144;
+    constexpr int SPI_CLK_FREQ_MHZ = 80; // clock in mhz
+
+    static constexpr int CHUNK_LINES = 8;
+    static constexpr int CHUNK_PIXELS = LCD_WIDTH * CHUNK_LINES;
 
     // Pixel color (Game Boy has 4 shades of gray)
     enum class Color : uint8_t
@@ -30,29 +36,27 @@ namespace display
     class LCDDisplay {
     public:
         LCDDisplay() = default;
-        virtual ~LCDDisplay();
+        ~LCDDisplay() = default;
         esp_err_t initialize();
-
-        // Asynchronous frame rendering: converts 8-bit to RGB565 + DMA transfer (non-blocking)
-        void renderFrameAsync(const uint8_t* frameBuffer);
 
         // Wait for DMA transfer to complete
         void waitForTransfer();
-
-        // Legacy synchronous methods (for menu)
-        void renderFrame(const uint8_t* frameBuffer);
         void renderFrameRGB565(const uint16_t* buffer, int width, int height, int offset_x = 0, int offset_y = 0);
+                
+    private:
+        uint32_t frame_times[10]{0};  // Historique pour adaptation
+        int frame_time_index{0};
 
     private:
         esp_lcd_panel_handle_t panel{nullptr};
         esp_lcd_panel_io_handle_t io_handle{nullptr};
 
-        // DMA transfer tracking
-        volatile bool transfer_done{true};
+        // semaphore for DMA transfer tracking
+        SemaphoreHandle_t dma_done_sem;
 
         // Chunked transfer: small RGB565 buffer in internal SRAM (fast)
-        static constexpr int CHUNK_LINES = 16;  // Transfer 16 lines at a time
-        uint16_t* rgb565_chunk{nullptr};  // 160×16×2 = 5.1 KB only!
+        static constexpr int CHUNK_LINES = 8;  // Transfer 8 lines at a time (optimized for pipeline)
+        static uint16_t rgb565_chunk[2][CHUNK_PIXELS];  // 160×8×2 = 2.56 KB ultra-fast!
 
         // Callback for DMA completion
         static bool lcd_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,

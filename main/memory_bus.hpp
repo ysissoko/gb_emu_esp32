@@ -84,6 +84,21 @@ namespace memory
         std::string getSerialDebugOutput() const;
         void clearSerialDebugOutput();
 
+        inline const uint8_t* getVRAM() const { return vram.data(); }
+        inline const uint8_t* getOAM()  const { return oam.data(); }
+
+        inline uint8_t readVRAM(uint16_t addr) const
+        {
+            // addr must be 0x8000–0x9FFF
+            return vram[addr - VRAM_START];
+        }
+
+        inline uint8_t readOAM(uint16_t addr) const
+        {
+            // addr must be 0xFE00–0xFE9F
+            return oam[addr - OAM_START];
+        }
+
     private:
         // ROM - 32KB (0x0000-0x7FFF)
         std::array<uint8_t, 0x8000> rom;

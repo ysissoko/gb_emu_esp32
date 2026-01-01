@@ -7,14 +7,6 @@
 
 #include <cstdio>
 
-// Disable logging in CPU for maximum performance
-#undef ESP_LOGI
-#undef ESP_LOGW
-#undef ESP_LOGE
-#define ESP_LOGI(tag, fmt, ...) do {} while(0)
-#define ESP_LOGW(tag, fmt, ...) do {} while(0)
-#define ESP_LOGE(tag, fmt, ...) do {} while(0)
-
 namespace cpu
 {
 
@@ -65,62 +57,65 @@ namespace cpu
     /// @brief run starts the CPU execution loop
     void CPU::run_frame()
     {
-        int cycles = 0;
-        int cycles_since_yield = 0;
-        // Yields moins fréquents maintenant que nous sommes sur CPU 1
-        // Trop de yields = overhead des context switches
-        const int YIELD_THRESHOLD = 6000; // ~4ms, environ 3 yields par frame
+        constexpr int CYCLES_PER_SCANLINE = 456;
+        constexpr int TOTAL_SCANLINES = 154;
 
-        // Profiling détaillé (activé tous les 60 frames)
         static int frame_prof = 0;
         frame_prof++;
         bool do_profile = (frame_prof % 60 == 0);
 
         int64_t time_cpu = 0, time_ppu = 0, time_timer = 0, time_irq = 0;
-        int64_t t_start, t_end;
 
-        while (cycles < GB_CYCLES_PER_FRAME)
+        for (int sl = 0; sl < TOTAL_SCANLINES; ++sl)
         {
-            if (do_profile) t_start = esp_timer_get_time();
-            uint8_t cpu_cycles = step();
-            if (do_profile) { t_end = esp_timer_get_time(); time_cpu += (t_end - t_start); }
+            int cycles = 0;
 
-            cycles += cpu_cycles;
-            cycles_since_yield += cpu_cycles;
-
-            if (do_profile) t_start = esp_timer_get_time();
-            ppu.step(cpu_cycles);
-            if (do_profile) { t_end = esp_timer_get_time(); time_ppu += (t_end - t_start); }
-
-            if (do_profile) t_start = esp_timer_get_time();
-            mmu.stepTimer(cpu_cycles);
-            if (do_profile) { t_end = esp_timer_get_time(); time_timer += (t_end - t_start); }
-
-            if (do_profile) t_start = esp_timer_get_time();
-            if (test_interrupts_flags())
+            while (cycles < CYCLES_PER_SCANLINE)
             {
-                cycles += INTERRUPT_CYCLES;
-                cycles_since_yield += INTERRUPT_CYCLES;
-            }
-            if (do_profile) { t_end = esp_timer_get_time(); time_irq += (t_end - t_start); }
+                int64_t t0;
 
-            // Yield périodiquement pour la stabilité sans trop d'overhead
-            if (cycles_since_yield >= YIELD_THRESHOLD)
-            {
-                taskYIELD();
-                cycles_since_yield = 0;
+                if (do_profile)
+                    t0 = esp_timer_get_time();
+                uint8_t cpu_cycles = step();
+                if (do_profile)
+                    time_cpu += esp_timer_get_time() - t0;
+
+                cycles += cpu_cycles;
+
+                if (do_profile)
+                    t0 = esp_timer_get_time();
+                ppu.step(cpu_cycles);
+                if (do_profile)
+                    time_ppu += esp_timer_get_time() - t0;
+
+                if (do_profile)
+                    t0 = esp_timer_get_time();
+                mmu.stepTimer(cpu_cycles);
+                if (do_profile)
+                    time_timer += esp_timer_get_time() - t0;
+
+                if (do_profile)
+                    t0 = esp_timer_get_time();
+                if (test_interrupts_flags())
+                    cycles += INTERRUPT_CYCLES;
+                if (do_profile)
+                    time_irq += esp_timer_get_time() - t0;
             }
+
+            // Yield UNE FOIS par scanline
+            taskYIELD();
         }
 
-        if (do_profile) {
-            ESP_LOGI("CPU_PROF", "CPU: %lld us | PPU: %lld us | Timer: %lld us | IRQ: %lld us | Total: %lld us",
-                     time_cpu, time_ppu, time_timer, time_irq, time_cpu + time_ppu + time_timer + time_irq);
+        if (do_profile)
+        {
+            ESP_LOGI("CPU_PROF",
+                     "CPU: %lld us | PPU: %lld us | Timer: %lld us | IRQ: %lld us | Total: %lld us",
+                     time_cpu, time_ppu, time_timer, time_irq,
+                     time_cpu + time_ppu + time_timer + time_irq);
         }
 
         if (ppu.isFrameReady())
-        {
             ppu.clearFrameReady();
-        }
     }
 
     bool CPU::test_interrupts_flags()

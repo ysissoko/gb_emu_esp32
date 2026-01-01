@@ -6,7 +6,7 @@
 
 namespace emulator
 {
-    const char* Emulator::TAG = "emulator";
+    const char *Emulator::TAG = "emulator";
 
     std::string Emulator::showMenuAndSelectROM()
     {
@@ -31,7 +31,8 @@ namespace emulator
             menu.draw();
 
             loop_count++;
-            if (loop_count % 20 == 0) {  // Log every second (20 * 50ms = 1s)
+            if (loop_count % 20 == 0)
+            { // Log every second (20 * 50ms = 1s)
                 ESP_LOGI(TAG, "Menu loop iteration %d, rom_selected=%d", loop_count, menu.isRomSelected());
             }
 
@@ -49,95 +50,95 @@ namespace emulator
 
         return selected_rom;
     }
-    
-void Emulator::emulator_task(void *arg)
-{
-    Emulator *emulator = static_cast<Emulator *>(arg);
 
-    ESP_LOGI(TAG, "Emulator task started!");
-
-    // Unsubscribe from watchdog for this task (emulation can take longer than 5s)
-    esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
-    ESP_LOGI(TAG, "Task watchdog disabled for emulator task");
-
-    // Show menu and load ROM (only once at startup)
-    if (!emulator->rom_loaded)
+    void Emulator::emulator_task(void *arg)
     {
-        std::string rom_path = emulator->showMenuAndSelectROM();
+        Emulator *emulator = static_cast<Emulator *>(arg);
 
-        if (!rom_path.empty())
+        ESP_LOGI(TAG, "Emulator task started!");
+
+        // Unsubscribe from watchdog for this task (emulation can take longer than 5s)
+        esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
+        ESP_LOGI(TAG, "Task watchdog disabled for emulator task");
+
+        // Show menu and load ROM (only once at startup)
+        if (!emulator->rom_loaded)
         {
-            ESP_LOGI(TAG, "Loading ROM: %s", rom_path.c_str());
-            emulator->loadROMFile(rom_path);
-            emulator->rom_loaded = true;
-            emulator->app_state = AppState::RUNNING_GAME;
-            ESP_LOGI(TAG, "ROM loaded, switching to RUNNING_GAME state");
-            ESP_LOGI(TAG, "Free heap after menu destroyed: %lu bytes", esp_get_free_heap_size());
-        }
-        else
-        {
-            ESP_LOGE(TAG, "No ROM selected, halting");
-            vTaskDelete(nullptr);
-            return;
-        }
-    }
+            std::string rom_path = emulator->showMenuAndSelectROM();
 
-    // Main emulation loop
-    ESP_LOGI(TAG, "Starting Game Boy emulation...");
+            if (!rom_path.empty())
+            {
+                ESP_LOGI(TAG, "Loading ROM: %s", rom_path.c_str());
+                emulator->loadROMFile(rom_path);
+                emulator->rom_loaded = true;
+                emulator->app_state = AppState::RUNNING_GAME;
+                ESP_LOGI(TAG, "ROM loaded, switching to RUNNING_GAME state");
+                ESP_LOGI(TAG, "Free heap after menu destroyed: %lu bytes", esp_get_free_heap_size());
+            }
+            else
+            {
+                ESP_LOGE(TAG, "No ROM selected, halting");
+                vTaskDelete(nullptr);
+                return;
+            }
+        }
 
-    // Log optimization settings
-    #ifdef NDEBUG
+        // Main emulation loop
+        ESP_LOGI(TAG, "Starting Game Boy emulation...");
+
+// Log optimization settings
+#ifdef NDEBUG
         ESP_LOGI(TAG, "Build: RELEASE mode (optimizations enabled)");
-    #else
+#else
         ESP_LOGW(TAG, "Build: DEBUG mode (optimizations disabled!)");
-    #endif
+#endif
 
-    ESP_LOGI(TAG, "Running on CPU core: %d", xPortGetCoreID());
+        ESP_LOGI(TAG, "Running on CPU core: %d", xPortGetCoreID());
 
-    int frame_count = 0;
-    TickType_t last_wake_time = xTaskGetTickCount();
+        int frame_count = 0;
+        TickType_t last_wake_time = xTaskGetTickCount();
 
-    while (true)
-    {
-        int64_t start = esp_timer_get_time();
-
-        // Run one frame of the Game Boy
-        int64_t emu_start = esp_timer_get_time();
-        emulator->cpu->run_frame();
-        int64_t emu_end = esp_timer_get_time();
-        int64_t emu_time = emu_end - emu_start;
-
-        frame_count++;
-
-        // Log FPS every 60 frames (~1 second) avec profiling détaillé
-        if (frame_count % 60 == 0)
+        while (true)
         {
-            int64_t frame_time = esp_timer_get_time() - start;
-            float fps = 1000000.0f / frame_time;
-            float target_fps = 60.0f;
-            int64_t target_frame_time = 16743; // 60 FPS target (1000000 / 60)
+            int64_t start = esp_timer_get_time();
 
-            ESP_LOGI(TAG, "Frame %d | Time: %lld us (%.1f FPS) | Target: %lld us (%.0f FPS) | Emulation: %lld us | Overhead: %lld us | Heap: %lu",
-                     frame_count, frame_time, fps, target_frame_time, target_fps,
-                     emu_time, frame_time - emu_time, esp_get_free_heap_size());
-        }
+            // Run one frame of the Game Boy
+            int64_t emu_start = esp_timer_get_time();
+            emulator->cpu->run_frame();
+            int64_t emu_end = esp_timer_get_time();
+            int64_t emu_time = emu_end - emu_start;
 
-        // Maintain timing - always yield to prevent watchdog
-        int64_t elapsed = esp_timer_get_time() - start;
-        int64_t delay_us = FRAME_US - elapsed;
+            frame_count++;
 
-        if (delay_us > 1000)
-        {
-            // Délai normal - libérer le CPU
-            vTaskDelay(pdMS_TO_TICKS(delay_us / 1000));
-        }
-        else
-        {
-            // Toujours yield, même si on est en retard
-            taskYIELD();
+            // Log FPS every 60 frames (~1 second) avec profiling détaillé
+            if (frame_count % 60 == 0)
+            {
+                int64_t frame_time = esp_timer_get_time() - start;
+                float fps = 1000000.0f / frame_time;
+                float target_fps = 60.0f;
+                int64_t target_frame_time = 16743; // 60 FPS target (1000000 / 60)
+
+                ESP_LOGI(TAG, "Frame %d | Time: %lld us (%.1f FPS) | Target: %lld us (%.0f FPS) | Emulation: %lld us | Overhead: %lld us | Heap: %lu",
+                         frame_count, frame_time, fps, target_frame_time, target_fps,
+                         emu_time, frame_time - emu_time, esp_get_free_heap_size());
+            }
+
+            // Maintain timing - always yield to prevent watchdog
+            int64_t elapsed = esp_timer_get_time() - start;
+            int64_t delay_us = FRAME_US - elapsed;
+
+            if (delay_us > 1000)
+            {
+                // Délai normal - libérer le CPU
+                vTaskDelay(pdMS_TO_TICKS(delay_us / 1000));
+            }
+            else
+            {
+                // Toujours yield, même si on est en retard
+                taskYIELD();
+            }
         }
     }
-}
 
     esp_err_t Emulator::init()
     {
@@ -197,6 +198,27 @@ void Emulator::emulator_task(void *arg)
         ESP_LOGI(TAG, "Creating CPU...");
         cpu = std::make_unique<cpu::CPU>(*mmu, *ppu);
 
+        ESP_LOGI(TAG, "Starting async render task...");
+        BaseType_t result = xTaskCreatePinnedToCore(
+            ppu::PPU::render_task,
+            "render_task",
+            8192, // Stack pour conversion + DMA
+            ppu.get(),
+            6, // Priorité haute > émulation
+            nullptr,
+            0 // Core 0 : rendu dédié
+        );
+
+        if (result == pdPASS)
+        {
+            ESP_LOGI(TAG, "Render task started successfully on core 0");
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to create render task!");
+            return ESP_ERR_NO_MEM;
+        }
+
         return ESP_OK;
     }
 
@@ -205,17 +227,14 @@ void Emulator::emulator_task(void *arg)
         ESP_LOGI(TAG, "Starting emulation...");
         ESP_LOGI(TAG, "Free heap before task creation: %lu bytes", esp_get_free_heap_size());
 
-        // Need very large stack for menu (menu object with 150KB framebuffer on stack)
-        // Stack is freed after ROM selection when showMenuAndSelectROM() returns
-        // Run on CPU 1 to leave CPU 0 for WiFi/system tasks and avoid watchdog issues
         BaseType_t result = xTaskCreatePinnedToCore(
             emulator_task,
             "emulator",
-            32 * 1024,  // 32KB stack (framebuffer now allocated on heap)
+            8192, // 8KB stack
             this,
             5,
             nullptr,
-            1  // Run on CPU 1 instead of CPU 0 to avoid IDLE0 watchdog
+            1
         );
 
         if (result == pdPASS)
@@ -229,17 +248,17 @@ void Emulator::emulator_task(void *arg)
         }
     }
 
-    void Emulator::loadROM(const uint8_t* rom_buffer, size_t rom_size)
+    void Emulator::loadROM(const uint8_t *rom_buffer, size_t rom_size)
     {
         ESP_LOGI(TAG, "Loading ROM into MMU...");
         mmu->loadROM(rom_buffer, rom_size);
         ESP_LOGI(TAG, "ROM loaded into MMU!");
     }
 
-    void Emulator::loadROMFile(const std::string& rom_path)
+    void Emulator::loadROMFile(const std::string &rom_path)
     {
         ESP_LOGI(TAG, "Loading ROM file: %s", rom_path.c_str());
-        uint8_t* rom_buffer = nullptr;
+        uint8_t *rom_buffer = nullptr;
         size_t rom_size = 0;
         esp_err_t ret = storage::read_binary_file(rom_path.c_str(), &rom_buffer, &rom_size);
 
