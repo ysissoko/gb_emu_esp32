@@ -60,63 +60,37 @@ namespace cpu
         constexpr int CYCLES_PER_SCANLINE = 456;
         constexpr int TOTAL_SCANLINES = 154;
 
-        static int frame_prof = 0;
-        frame_prof++;
-        bool do_profile = (frame_prof % 60 == 0);
-
-        int64_t time_cpu = 0, time_ppu = 0, time_timer = 0, time_irq = 0;
-
         for (int sl = 0; sl < TOTAL_SCANLINES; ++sl)
         {
             int cycles = 0;
+            int timer_batch = 0;
 
             while (cycles < CYCLES_PER_SCANLINE)
             {
-                int64_t t0;
-
-                if (do_profile)
-                    t0 = esp_timer_get_time();
                 uint8_t cpu_cycles = step();
-                if (do_profile)
-                    time_cpu += esp_timer_get_time() - t0;
-
                 cycles += cpu_cycles;
+                timer_batch += cpu_cycles;
 
-                if (do_profile)
-                    t0 = esp_timer_get_time();
+                // Batch timer updates every 32 cycles (timer runs at much lower freq than CPU)
+                if (UNLIKELY(timer_batch >= 32))
+                {
+                    mmu.stepTimer(timer_batch);
+                    timer_batch = 0;
+                }
+
                 ppu.step(cpu_cycles);
-                if (do_profile)
-                    time_ppu += esp_timer_get_time() - t0;
 
-                if (do_profile)
-                    t0 = esp_timer_get_time();
-                mmu.stepTimer(cpu_cycles);
-                if (do_profile)
-                    time_timer += esp_timer_get_time() - t0;
-
-                if (do_profile)
-                    t0 = esp_timer_get_time();
-                if (test_interrupts_flags())
+                // Check interrupts every instruction (required for accuracy)
+                if (UNLIKELY(test_interrupts_flags()))
                     cycles += INTERRUPT_CYCLES;
-                if (do_profile)
-                    time_irq += esp_timer_get_time() - t0;
             }
 
-            // Yield UNE FOIS par scanline
-            // taskYIELD();
+            // Flush remaining timer cycles at end of scanline
+            if (LIKELY(timer_batch > 0))
+                mmu.stepTimer(timer_batch);
         }
 
-        vTaskDelay(1);
-
-        if (do_profile)
-        {
-            ESP_LOGI("CPU_PROF",
-                     "CPU: %lld us | PPU: %lld us | Timer: %lld us | IRQ: %lld us | Total: %lld us",
-                     time_cpu, time_ppu, time_timer, time_irq,
-                     time_cpu + time_ppu + time_timer + time_irq);
-        }
-
-        if (ppu.isFrameReady())
+        if (UNLIKELY(ppu.isFrameReady()))
             ppu.clearFrameReady();
     }
 
@@ -163,10 +137,19 @@ namespace cpu
     /// @return the number of cycles the instruction took
     uint8_t CPU::step()
     {
+        // DEBUG: All debug logging disabled for performance
+
         // HALT is rare, CPU normally executes instructions
         if (UNLIKELY(cpu_stopped))
         {
             return 4; // HALT consumes cycles but doesn't execute
+        }
+
+        // Handle EI 1-instruction delay: activate IME before next instruction
+        if (UNLIKELY(ei_pending))
+        {
+            ei_pending = false;
+            ime_enabled = true;
         }
 
         uint8_t opcode = mmu.read(pc++);
@@ -950,8 +933,9 @@ namespace cpu
         case 0xF2: // LD A, (0xFF00 + C)
             a = mmu.read(0xFF00 + c);
             return 8;
-        case 0xF3: // DI
+        case 0xF3: // DI (Disable Interrupts immediately, no delay)
             ime_enabled = false;
+            ei_pending = false;  // Cancel any pending EI
             return 4;
         case 0xF5: // PUSH AF
         {
@@ -995,8 +979,8 @@ namespace cpu
             a = mmu.read(addr);
         }
             return 16;
-        case 0xFB: // EI
-            ime_enabled = true;
+        case 0xFB: // EI (Enable Interrupts with 1-instruction delay)
+            ei_pending = true;
             return 4;
         case 0xFE: // CP d8
         {

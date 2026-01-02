@@ -149,8 +149,8 @@ namespace display::menu
         // Don't draw if ROM is already selected
         if (rom_selected)
         {
-            // Effacer le framebuffer RGB565
-            clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * MENU_HEIGHT, RGB565_BLACK);
+            // Clear the framebuffer RGB565 (only the allocated chunk!)
+            clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
             return;
         }
 
@@ -160,21 +160,20 @@ namespace display::menu
             return;
         }
 
-        ESP_LOGI(TAG, "Drawing menu (needs_redraw=true, rom_count=%d, selected_idx=%d)...", rom_count, selected_rom_idx);
+        // Clear the framebuffer RGB565 (only the allocated chunk!)
+        clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
 
-        // Effacer le framebuffer RGB565
-        clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * MENU_HEIGHT, RGB565_BLACK);
-
-        // Dessiner le titre
-        draw_text_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+        // Draw the title (use FB_CHUNK_HEIGHT for bounds checking)
+        draw_text_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
                          20, 20, "SELECT ROM", RGB565_WHITE);
 
-        ESP_LOGI(TAG, "Title drawn at (20,20), color=0x%04X", RGB565_WHITE);
-
-        // Calculer la zone visible (max 30 items sur un écran 240×320)
-        constexpr uint8_t MAX_VISIBLE_ITEMS = 30;
+        // Calculate visible area (limited by framebuffer height)
+        // FB_CHUNK_HEIGHT = 80, title at y=20 (takes 8 pixels)
+        // Available space: 80 - 28 = 52 pixels
+        // With ITEM_HEIGHT=10: 52/10 = 5 items maximum
+        constexpr uint8_t MAX_VISIBLE_ITEMS = 5;  // Reduced from 30 to fit in 80 lines
         constexpr uint8_t ITEM_HEIGHT = 10;
-        constexpr uint8_t START_Y = 40;
+        constexpr uint8_t START_Y = 30;  // Start at y=30 (after title at y=20+8=28)
 
         int scroll_offset = 0;
         if (rom_count > MAX_VISIBLE_ITEMS)
@@ -199,45 +198,44 @@ namespace display::menu
             bool is_selected = (rom_idx == selected_rom_idx);
             uint16_t text_color = is_selected ? RGB565_YELLOW : RGB565_WHITE;
 
-            // Curseur pour l'item sélectionné
+            // Cursor for selected item
             if (is_selected)
             {
-                draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                draw_char_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
                                  10, y_pos, '>', RGB565_YELLOW);
             }
-            // Nom du ROM (tronquer si trop long - adapter pour largeur réelle)
+            // ROM name (truncate if too long)
             std::string rom_name = roms_names_list[rom_idx];
-            int max_chars = (MENU_WIDTH - 20) / 8; // 8 pixels par caractère, marge de 20px
-            if (max_chars < 10) max_chars = 10; // Minimum absolu
-            
+            int max_chars = (MENU_WIDTH - 20) / 8; // 8 pixels per character, 20px margin
+            if (max_chars < 10) max_chars = 10; // Absolute minimum
+
             if (rom_name.length() > max_chars && rom_name.length() > 8)
             {
                 rom_name = rom_name.substr(0, max_chars - 3) + "...";
             }
-            draw_text_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+            draw_text_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
                              20, y_pos, rom_name, text_color);
         }
 
-        // Indicateurs de scroll
+        // Scroll indicators
         if (rom_count > MAX_VISIBLE_ITEMS)
         {
             if (scroll_offset > 0)
             {
-                draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
+                draw_char_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
                                  MENU_WIDTH / 2 - 4, 30, '^', RGB565_LIGHT_GRAY);
             }
             if (scroll_offset + MAX_VISIBLE_ITEMS < rom_count)
             {
-                draw_char_rgb565(framebuffer, MENU_WIDTH, MENU_HEIGHT,
-                                 MENU_WIDTH / 2 - 4, MENU_HEIGHT - 10, 'v', RGB565_LIGHT_GRAY);
+                draw_char_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
+                                 MENU_WIDTH / 2 - 4, FB_CHUNK_HEIGHT - 10, 'v', RGB565_LIGHT_GRAY);
             }
         }
 
-        // Afficher directement le framebuffer RGB565
-        ESP_LOGI(TAG, "Sending %dx%d framebuffer to display...", MENU_WIDTH, MENU_HEIGHT);
-        ESP_LOGI(TAG, "Framebuffer address: %p, first pixel: 0x%04X", framebuffer, framebuffer ? framebuffer[0] : 0);
-        display.renderFrameRGB565(framebuffer, MENU_WIDTH, MENU_HEIGHT, 0, 0);
-        ESP_LOGI(TAG, "Framebuffer sent to display");
+        // Display the framebuffer RGB565 (80 lines at top of screen)
+        // This will display the menu in the top 80 pixels of the 320-pixel screen
+        // The bottom 240 pixels will remain black (previous content)
+        display.renderFrameRGB565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT, 0, 0);
 
         // Mark as drawn
         needs_redraw = false;

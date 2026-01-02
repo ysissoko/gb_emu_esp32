@@ -82,7 +82,7 @@ namespace ppu
         ~PPU();
 
         // Update PPU state for given number of cycles
-        IRAM_ATTR void step(uint8_t cycles);
+        IRAM_ATTR void step(uint8_t cycles) __attribute__((hot));
 
         // Get framebuffer pointer for rendering (RGB565 format)
         const uint16_t* getFramebuffer() const { return framebuffer; }
@@ -109,42 +109,16 @@ namespace ppu
         const uint8_t* oam{nullptr};
 
         // Framebuffer: Direct RGB565 (no conversion needed!)
-        // Allocated in PSRAM to save precious internal SRAM
+        // Allocated in INTERNAL RAM for fast access (DMA-compatible)
         uint16_t* framebuffer{nullptr};
         
         // Optimized palette lookup table (BGR565 for ST7789V)
         static constexpr uint16_t GB_PALETTE_BGR565[4] = {
             0xFFFF, // WHITE
-            0xC618, // LIGHT_GRAY  
+            0xC618, // LIGHT_GRAY
             0x632C, // DARK_GRAY
             0x0000  // BLACK
         };
-        
-        // Tile cache L1 pour optimiser les accès VRAM
-        struct TileCache {
-            uint16_t tile_data[384][8][2];  // 384 tiles max, 8 lignes, 2 octets/ligne
-            bool valid[384]{false};
-            
-            void update_tile(uint8_t tile_idx, const uint8_t* data) {
-                // Préconvertir en RGB565
-                for (int y = 0; y < 8; y++) {
-                    uint8_t byte1 = data[y * 2];
-                    uint8_t byte2 = data[y * 2 + 1];
-                    tile_data[tile_idx][y][0] = byte1;
-                    tile_data[tile_idx][y][1] = byte2;
-                }
-                valid[tile_idx] = true;
-            }
-            
-            bool get_tile_data(uint8_t tile_idx, uint8_t line, uint8_t& byte1, uint8_t& byte2) {
-                if (valid[tile_idx] && line < 8) {
-                    byte1 = tile_data[tile_idx][line][0];
-                    byte2 = tile_data[tile_idx][line][1];
-                    return true;
-                }
-                return false;
-            }
-        } tile_cache;
 
         // PPU state
         Mode mode;

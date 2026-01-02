@@ -27,9 +27,9 @@ namespace cpu
     public:
         CPU(memory::MemoryBus&, ppu::PPU&);
         ~CPU();
-        IRAM_ATTR uint8_t execute(uint8_t);
-        IRAM_ATTR uint8_t execute_extended(uint8_t);
-        IRAM_ATTR uint8_t step();
+        IRAM_ATTR uint8_t execute(uint8_t) __attribute__((hot));
+        IRAM_ATTR uint8_t execute_extended(uint8_t) __attribute__((hot));
+        IRAM_ATTR uint8_t step() __attribute__((hot));
         void run_frame();
     private:
         uint8_t a{0};
@@ -51,6 +51,7 @@ namespace cpu
 
         bool cpu_stopped{false};
         bool ime_enabled{false};
+        bool ei_pending{false};  // EI has 1-instruction delay
 
         IRAM_ATTR inline bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
         IRAM_ATTR inline bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };

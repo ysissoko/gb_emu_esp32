@@ -57,12 +57,11 @@ namespace storage
                 continue;
             }
 
-            // Skip FAT32 short name artifacts (8.3 format duplicates)
-            // These are auto-generated entries for long filenames and should be ignored
-            // They contain tilde (~) or start with underscore (_)
-            if (name.find('~') != std::string::npos || name[0] == '_')
+            // Skip hidden files, system files, and FAT32 artifacts
+            // Skip files starting with: . (hidden), _ (system), ~ (FAT32 artifact)
+            if (name.empty() || name[0] == '.' || name[0] == '_' || name.find('~') != std::string::npos)
             {
-                ESP_LOGD(TAG, "Skipping FAT32 short name artifact: %s", name.c_str());
+                ESP_LOGD(TAG, "Skipping hidden/system/artifact file: %s", name.c_str());
                 continue;
             }
 

@@ -57,15 +57,16 @@ namespace emulator
 
         ESP_LOGI(TAG, "Emulator task started!");
 
-        // Unsubscribe from watchdog for this task (emulation can take longer than 5s)
+        // Unsubscribe from watchdog for this task (MUST be done BEFORE menu)
+        // Menu can take several seconds while waiting for user input
         esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
         ESP_LOGI(TAG, "Task watchdog disabled for emulator task");
 
         // Show menu and load ROM (only once at startup)
         if (!emulator->rom_loaded)
         {
-            // TODO re enable when menu selection is fixed
-            std::string rom_path = "/sdcard/roms/Dr. Mario.gb";//emulator->showMenuAndSelectROM();
+            // Show menu and let user select ROM
+            std::string rom_path = emulator->showMenuAndSelectROM();
 
             if (!rom_path.empty())
             {
@@ -97,55 +98,64 @@ namespace emulator
         ESP_LOGI(TAG, "Running on CPU core: %d", xPortGetCoreID());
 
         int frame_count = 0;
+        int rendered_frames = 0;
+        int skipped_frames = 0;
 
         while (true)
         {
             int64_t frame_start = esp_timer_get_time();
-            
-            // Frame skipping: use XOR for optimal performance (1/2 frame skip)
-            emulator->frame_skip_bit ^= 0x01;
-            bool should_skip = emulator->frame_skip_bit;
+
+            // Frame skipping: lag-based decision (only skip rendering, not emulation)
+            // TEMPORARY: Disable frame skipping for debugging
+            bool should_skip = false;  // (emulator->lag_us > FRAME_US / 2);
 
             // Set PPU rendering flag based on skip decision (affects render only!)
             emulator->ppu->setShouldRender(!should_skip);
 
             // Always run Game Boy frame (CPU + PPU + APU)
-            int64_t emu_start = esp_timer_get_time();
             emulator->cpu->run_frame();
-            
-            // Single frame timing (constant FRAME_US)
-            int64_t elapsed = esp_timer_get_time() - frame_start;
-            int64_t sleep_us = FRAME_US - elapsed;
-            
-            if (sleep_us > 1000) {
-                vTaskDelay(pdMS_TO_TICKS(sleep_us / 1000));
-            } else {
-                vTaskDelay(1);
-            }
-            int64_t emu_end = esp_timer_get_time();
-            
-            int64_t emu_time = emu_end - emu_start;
 
-            // Mise à jour du retard
+            // Update RTC (Real-Time Clock for MBC3)
+            emulator->mmu->updateRTC();
+
+            int64_t frame_end = esp_timer_get_time();
+
+            int64_t emu_time = frame_end - frame_start;
+
+            // Update lag accumulator
             emulator->lag_us += emu_time - FRAME_US;
 
+            // Clamp lag to prevent excessive accumulation
             if (emulator->lag_us < -FRAME_US)
-                emulator->lag_us = -FRAME_US; // clamp avance
+                emulator->lag_us = -FRAME_US;
             if (emulator->lag_us > 2 * FRAME_US)
-                emulator->lag_us = 2 * FRAME_US; // clamp retard
+                emulator->lag_us = 2 * FRAME_US;
 
             // Stats
+            frame_count++;
             if (!should_skip)
-                frame_count++;
+                rendered_frames++;
+            else
+                skipped_frames++;
 
-            // Synchronisation temps réel (TOUJOURS 1 frame)
-            elapsed = esp_timer_get_time() - frame_start;
-            sleep_us = FRAME_US - elapsed;
+            // FPS Stats tracking (logged only when needed for debugging)
+            // Uncomment below to enable FPS logging every second:
+            // if (frame_count % 60 == 0)
+            // {
+            //     ESP_LOGI(TAG, "FPS Stats: rendered=%d, skipped=%d, lag_us=%lld, emu_time=%lld us",
+            //              rendered_frames, skipped_frames, emulator->lag_us, emu_time);
+            //     rendered_frames = 0;
+            //     skipped_frames = 0;
+            // }
+
+            // Synchronization: sleep for remaining frame time
+            int64_t elapsed = esp_timer_get_time() - frame_start;
+            int64_t sleep_us = FRAME_US - elapsed;
 
             if (sleep_us > 1000)
                 vTaskDelay(pdMS_TO_TICKS(sleep_us / 1000));
             else
-                vTaskDelay(1);
+                vTaskDelay(1);  // ALWAYS yield at least 1 tick to let IDLE task run
         }
     }
 
@@ -211,11 +221,11 @@ namespace emulator
         BaseType_t result = xTaskCreatePinnedToCore(
             ppu::PPU::render_task,
             "render_task",
-            8192, // Stack pour conversion + DMA
+            8192, // Stack for DMA transfers
             ppu.get(),
-            6, // Priorité haute > émulation
+            4, // Priority: lower than emulation (5) to prevent blocking
             nullptr,
-            0 // Core 0 : rendu dédié
+            0 // Core 0: dedicated rendering
         );
 
         if (result == pdPASS)
@@ -278,25 +288,33 @@ namespace emulator
 
         ESP_LOGI(TAG, "Loaded ROM: %s (%zu bytes)", rom_path.c_str(), rom_size);
 
-        // Validate ROM size before loading (prevent crashes)
-        if (rom_size > 0x8000)
-        { // 32KB max current support
-            ESP_LOGW(TAG, "ROM too large: %zu bytes, max supported: 32KB (0x8000)", rom_size);
-            ESP_LOGW(TAG, "This ROM requires bank switching support - not yet implemented");
-            ESP_LOGW(TAG, "Cannot load this ROM - will crash. Aborting.");
-            free(rom_buffer);
-            return;
-        }
-
-        // Additional safety check
+        // Validate ROM data
         if (rom_buffer == nullptr || rom_size == 0)
         {
             ESP_LOGE(TAG, "Invalid ROM data: null pointer or zero size");
             return;
         }
 
-        // Load ROM into memory bus
+        // Check maximum size (2MB PSRAM limit)
+        if (rom_size > 0x200000)
+        {
+            ESP_LOGW(TAG, "ROM too large: %zu bytes (max 2MB supported)", rom_size);
+            ESP_LOGW(TAG, "Truncating to 2MB...");
+            rom_size = 0x200000;
+        }
+
+        // Load ROM into memory bus (MBC support now enabled)
         loadROM(rom_buffer, rom_size);
+
+        // Set ROM path for save management
+        mmu->setROMPath(rom_path);
+
+        // Load SRAM from save file (if cartridge has battery)
+        esp_err_t sram_ret = mmu->loadSRAM();
+        if (sram_ret == ESP_OK)
+        {
+            ESP_LOGI(TAG, "SRAM loaded from save file");
+        }
 
         // Free the ROM buffer after loading (MMU should have copied it)
         free(rom_buffer);

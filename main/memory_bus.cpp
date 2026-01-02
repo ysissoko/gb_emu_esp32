@@ -2,8 +2,15 @@
 #include "joypad.hpp"
 #include "timer.hpp"
 #include "serial.hpp"
+#include "apu.hpp"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include <cstring>
+
+// Branch prediction hints
+#define LIKELY(x)   __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 namespace memory
 {
@@ -12,15 +19,36 @@ namespace memory
           oam{0}, io_registers{0}, hram{0}, ie_register{0}, if_register{0},
           prev_joypad_state{0xFF}, joypad{joypad}
     {
+        // Allocate extended ROM storage in PSRAM (2MB max)
+        rom_extended = static_cast<uint8_t*>(
+            heap_caps_malloc(0x200000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+        if (!rom_extended)
+        {
+            ESP_LOGE("MemoryBus", "Failed to allocate ROM extended storage in PSRAM!");
+        }
+        else
+        {
+            ESP_LOGI("MemoryBus", "Allocated 2MB ROM extended storage in PSRAM");
+            memset(rom_extended, 0xFF, 0x200000);
+        }
+
         // Initialize timer (must be after member initialization)
         timer = std::make_unique<timer::Timer>(*this);
         // Initialize serial port
         serial = std::make_unique<serial::Serial>(*this);
+        // Initialize APU (stub - no audio output)
+        apu = std::make_unique<apu::APU>();
     }
 
     MemoryBus::~MemoryBus()
     {
-        // Destructor implementation
+        // Free PSRAM allocation
+        if (rom_extended)
+        {
+            heap_caps_free(rom_extended);
+            rom_extended = nullptr;
+        }
     }
 
     uint8_t MemoryBus::read(uint16_t address) const
@@ -29,12 +57,35 @@ namespace memory
         // This reduces the number of comparisons significantly
         switch (address >> 12) {  // Get top 4 bits (0x0-0xF)
             case 0x0: case 0x1: case 0x2: case 0x3:
-                // ROM Bank 0 (0x0000-0x3FFF)
+                // ROM Bank 0 (0x0000-0x3FFF) - always fixed to first 16KB
                 return rom[address];
 
             case 0x4: case 0x5: case 0x6: case 0x7:
-                // ROM Bank N (0x4000-0x7FFF)
-                return rom[address];
+                // ROM Bank N (0x4000-0x7FFF) - switchable bank
+                if (UNLIKELY(mbc_type == 0 || !rom_extended)) {
+                    // ROM ONLY or no extended ROM - use base ROM
+                    return rom[address];
+                } else {
+                    // MBC: map to extended ROM based on current bank
+                    uint16_t effective_bank = rom_bank;
+
+                    // MBC1 mode 1: only use bits 0-4 (ignore upper 2 bits)
+                    if (mbc_type == 1 && mbc_mode == 1) {
+                        effective_bank = rom_bank & 0x1F;
+                    }
+
+                    // Bank 0 is forbidden in switchable region (auto-corrected to bank 1)
+                    if (effective_bank == 0) effective_bank = 1;
+
+                    size_t bank_offset = (effective_bank - 1) * 0x4000;  // -1 because bank 0 is in base ROM
+                    size_t offset = bank_offset + (address - 0x4000);
+
+                    // Bounds check (unlikely to fail in normal operation)
+                    if (LIKELY(offset < rom_size - 0x8000)) {
+                        return rom_extended[offset];
+                    }
+                    return 0xFF;  // Out of bounds
+                }
 
             case 0x8: case 0x9:
                 // Video RAM (0x8000-0x9FFF)
@@ -42,7 +93,45 @@ namespace memory
 
             case 0xA: case 0xB:
                 // External RAM (0xA000-0xBFFF)
-                return external_ram[address - EXTERNAL_RAM_START];
+                if (!ram_enabled)
+                    return 0xFF;
+
+                if (mbc_type == 2) {
+                    // MBC2: 512 nibbles (only lower 4 bits, upper 4 are 1s)
+                    uint16_t offset = address & 0x01FF;  // Only 9 bits address
+                    return mbc2_ram[offset] | 0xF0;  // Upper nibble always 1s
+                }
+                else if (mbc_type == 3 && ram_bank >= 0x08 && ram_bank <= 0x0C) {
+                    // MBC3 RTC registers (0x08-0x0C)
+                    if (rtc_latched) {
+                        // Return latched values
+                        switch (ram_bank) {
+                            case 0x08: return rtc_seconds;
+                            case 0x09: return rtc_minutes;
+                            case 0x0A: return rtc_hours;
+                            case 0x0B: return rtc_days_low;
+                            case 0x0C: return rtc_days_high;
+                        }
+                    }
+                    return 0xFF;
+                }
+                else {
+                    // Normal RAM (MBC1/3/5) with banking
+                    uint8_t effective_ram_bank = ram_bank;
+
+                    // MBC1 mode 0: RAM bank always 0
+                    if (mbc_type == 1 && mbc_mode == 0) {
+                        effective_ram_bank = 0;
+                    }
+
+                    size_t offset = (effective_ram_bank * 0x2000) + (address - EXTERNAL_RAM_START);
+
+                    // Bounds check
+                    if (LIKELY(offset < external_ram.size())) {
+                        return external_ram[offset];
+                    }
+                    return 0xFF;
+                }
 
             case 0xC: case 0xD:
                 // Work RAM (0xC000-0xDFFF)
@@ -89,6 +178,10 @@ namespace memory
                     else if (address == timer::TMA_REGISTER) return timer->readTMA();
                     else if (address == timer::TAC_REGISTER) return timer->readTAC();
                     else if (address == IF_REGISTER) return if_register;
+                    else if (address >= 0xFF10 && address <= 0xFF3F) {
+                        // APU registers (0xFF10-0xFF3F)
+                        return apu->read(address);
+                    }
                     else return io_registers[address - IO_REGISTERS_START];
                 }
                 else if (address < 0xFFFF) {
@@ -109,10 +202,78 @@ namespace memory
     {
         // Optimized: Use high nibble for fast region lookup
         switch (address >> 12) {
-            case 0x0: case 0x1: case 0x2: case 0x3:
-            case 0x4: case 0x5: case 0x6: case 0x7:
-                // ROM (0x0000-0x7FFF) - Read-only, but MBC writes trigger bank switching
-                // TODO: Handle MBC bank switching
+            case 0x0: case 0x1:
+                // 0x0000-0x1FFF: RAM Enable (MBC1/2/3/5)
+                if (LIKELY(mbc_type != 0)) {
+                    // MBC2: RAM enable only if bit 8 of address is 0
+                    if (mbc_type == 2) {
+                        if ((address & 0x0100) == 0) {
+                            ram_enabled = ((value & 0x0F) == 0x0A);
+                        }
+                    }
+                    else {
+                        ram_enabled = ((value & 0x0F) == 0x0A);
+                    }
+                }
+                return;
+
+            case 0x2: case 0x3:
+                // 0x2000-0x3FFF: ROM Bank Number (lower bits)
+                if (mbc_type == 2) {
+                    // MBC2: ROM bank only if bit 8 of address is 1
+                    if (address & 0x0100) {
+                        uint8_t bank = value & 0x0F;  // 4-bit bank number
+                        if (bank == 0) bank = 1;
+                        rom_bank = bank;
+                    }
+                }
+                else if (LIKELY(mbc_type == 1 || mbc_type == 3)) {
+                    // MBC1/MBC3: 5-bit bank number (0x01-0x1F)
+                    uint8_t bank = value & 0x1F;
+                    if (UNLIKELY(bank == 0)) bank = 1;  // Bank 0 forbidden
+                    rom_bank = (rom_bank & 0xE0) | bank;
+                } else if (mbc_type == 5) {
+                    // MBC5: 9-bit bank number (lower 8 bits)
+                    rom_bank = (rom_bank & 0x100) | value;
+                }
+                return;
+
+            case 0x4: case 0x5:
+                // 0x4000-0x5FFF: RAM Bank Number or ROM Bank Number (upper bits)
+                if (LIKELY(mbc_type == 1)) {
+                    // MBC1: RAM bank or upper ROM bank bits (mode-dependent)
+                    if (LIKELY(mbc_mode == 0)) {
+                        // ROM banking mode: upper 2 bits of ROM bank
+                        rom_bank = (rom_bank & 0x1F) | ((value & 0x03) << 5);
+                    } else {
+                        // RAM banking mode
+                        ram_bank = value & 0x03;
+                    }
+                } else if (mbc_type == 3) {
+                    // MBC3: RAM bank (0x00-0x03) or RTC register (0x08-0x0C)
+                    ram_bank = value & 0x0F;
+                } else if (mbc_type == 5) {
+                    // MBC5: 9th bit of ROM bank
+                    rom_bank = (rom_bank & 0xFF) | ((value & 0x01) << 8);
+                }
+                return;
+
+            case 0x6: case 0x7:
+                // 0x6000-0x7FFF: Banking Mode Select (MBC1) or RTC Latch (MBC3)
+                if (LIKELY(mbc_type == 1)) {
+                    mbc_mode = value & 0x01;
+                }
+                else if (mbc_type == 3) {
+                    // MBC3: RTC latch (write 0x00 then 0x01 to latch)
+                    if (rtc_latch == 0x00 && value == 0x01) {
+                        rtc_latched = true;
+                        updateRTC();  // Update and latch current RTC values
+                    }
+                    else if (value == 0x00) {
+                        rtc_latched = false;
+                    }
+                    rtc_latch = value;
+                }
                 return;
 
             case 0x8: case 0x9:
@@ -122,7 +283,42 @@ namespace memory
 
             case 0xA: case 0xB:
                 // External RAM (0xA000-0xBFFF)
-                external_ram[address - EXTERNAL_RAM_START] = value;
+                if (!ram_enabled)
+                    return;
+
+                if (mbc_type == 2) {
+                    // MBC2: 512 nibbles (only lower 4 bits)
+                    uint16_t offset = address & 0x01FF;
+                    mbc2_ram[offset] = value & 0x0F;  // Only lower nibble
+                    markSRAMDirty();
+                }
+                else if (mbc_type == 3 && ram_bank >= 0x08 && ram_bank <= 0x0C) {
+                    // MBC3: Write to RTC registers
+                    switch (ram_bank) {
+                        case 0x08: rtc_seconds = value; break;
+                        case 0x09: rtc_minutes = value; break;
+                        case 0x0A: rtc_hours = value; break;
+                        case 0x0B: rtc_days_low = value; break;
+                        case 0x0C: rtc_days_high = value; break;
+                    }
+                }
+                else {
+                    // Normal RAM write (MBC1/3/5) with banking
+                    uint8_t effective_ram_bank = ram_bank;
+
+                    // MBC1 mode 0: RAM bank always 0
+                    if (mbc_type == 1 && mbc_mode == 0) {
+                        effective_ram_bank = 0;
+                    }
+
+                    size_t offset = (effective_ram_bank * 0x2000) + (address - EXTERNAL_RAM_START);
+
+                    // Bounds check
+                    if (LIKELY(offset < external_ram.size())) {
+                        external_ram[offset] = value;
+                        markSRAMDirty();
+                    }
+                }
                 return;
 
             case 0xC: case 0xD:
@@ -162,9 +358,22 @@ namespace memory
                     else if (address == timer::TMA_REGISTER) timer->writeTMA(value);
                     else if (address == timer::TAC_REGISTER) timer->writeTAC(value);
                     else if (address == IF_REGISTER) if_register = value;
+                    else if (address == 0xFF46) {
+                        // DMA Transfer (0xFF46): Copy 160 bytes from XX00-XX9F to OAM (0xFE00-0xFE9F)
+                        // Value written is the source address high byte (XX)
+                        uint16_t source = value << 8;  // XX00
+                        for (uint16_t i = 0; i < 0xA0; i++) {
+                            oam[i] = read(source + i);
+                        }
+                        // DMA takes 160 M-cycles but we don't emulate the timing accurately
+                        io_registers[0x46] = value;
+                    }
+                    else if (address >= 0xFF10 && address <= 0xFF3F) {
+                        // APU registers (0xFF10-0xFF3F)
+                        apu->write(address, value);
+                    }
                     else {
                         io_registers[address - IO_REGISTERS_START] = value;
-                        // TODO: Handle special I/O register side effects (DMA, etc.)
                     }
                 }
                 else if (address < 0xFFFF) {
@@ -201,51 +410,81 @@ namespace memory
 
     void memory::MemoryBus::loadROM(const uint8_t* data, size_t size)
     {
-        // Detect MBC type from ROM header
-        if (size >= 0x8000) {
-            uint8_t cart_type = data[0x0147]; // Cartridge type byte
-            if (cart_type >= 0x01 && cart_type <= 0x03) {
-                mbc_type = cart_type; // MBC1-3
-                ESP_LOGI("MemoryBus", "MBC%d detected, ROM size: %zu bytes", mbc_type, size);
+        rom_size = size;
+
+        // Detect MBC type from ROM header (0x0147)
+        if (size >= 0x150) {
+            uint8_t cart_type = data[0x0147];
+            uint8_t rom_size_code = data[0x0148];
+
+            // Decode MBC type
+            if (cart_type == 0x00) {
+                mbc_type = 0;  // ROM ONLY
+            } else if (cart_type >= 0x01 && cart_type <= 0x03) {
+                mbc_type = 1;  // MBC1
             } else if (cart_type >= 0x05 && cart_type <= 0x06) {
-                mbc_type = 5; // MBC5
-                ESP_LOGI("MemoryBus", "MBC5 detected, ROM size: %zu bytes", mbc_type, size);
+                mbc_type = 2;  // MBC2
+            } else if (cart_type >= 0x0F && cart_type <= 0x13) {
+                mbc_type = 3;  // MBC3
+            } else if (cart_type >= 0x19 && cart_type <= 0x1E) {
+                mbc_type = 5;  // MBC5
             } else {
-                mbc_type = 0; // Standard ROM
-                ESP_LOGI("MemoryBus", "Standard ROM detected, size: %zu bytes", size);
+                mbc_type = 0;  // Unknown, treat as ROM ONLY
+                ESP_LOGW("MemoryBus", "Unknown cart type 0x%02X, treating as ROM ONLY", cart_type);
             }
+
+            // Check if cartridge has battery-backed SRAM
+            has_battery = save_manager::has_battery(cart_type);
+
+            // Calculate expected ROM size from header
+            size_t expected_size = 0x8000 << rom_size_code;  // 32KB << code
+
+            ESP_LOGI("MemoryBus", "ROM Header: type=0x%02X (MBC%d), size_code=0x%02X (%zu KB expected), actual=%zu KB, battery=%d",
+                     cart_type, mbc_type, rom_size_code, expected_size / 1024, size / 1024, has_battery);
         } else {
-            mbc_type = 0; // Standard ROM
-            ESP_LOGI("MemoryBus", "Standard ROM detected, size: %zu bytes", size);
+            mbc_type = 0;
+            ESP_LOGW("MemoryBus", "ROM too small for header, treating as ROM ONLY");
         }
-        
-        // Load ROM into base 32KB (0x0000-0x7FFF)
-        size_t copy_size = (size > rom.size()) ? rom.size() : size;
-        std::memcpy(rom.data(), data, copy_size);
-        
-        // Load additional banks into extended storage
-        if (size > rom.size()) {
+
+        // Load first 32KB into base ROM (banks 0 and 1)
+        size_t base_size = (size > rom.size()) ? rom.size() : size;
+        std::memcpy(rom.data(), data, base_size);
+        ESP_LOGI("MemoryBus", "Loaded %zu bytes into base ROM", base_size);
+
+        // Load remaining banks into extended ROM (PSRAM)
+        if (size > rom.size() && rom_extended) {
             size_t extra_size = size - rom.size();
-            size_t banks_to_copy = (extra_size > rom_extended.size()) ? rom_extended.size() : extra_size;
-            std::memcpy(rom_extended.data(), data + rom.size(), banks_to_copy);
-            ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks", banks_to_copy / 0x4000);
-        } else {
-            mbc_type = 0; // Standard ROM
-            ESP_LOGI("MemoryBus", "Standard ROM detected, size: %zu bytes", size);
+            size_t max_extended = 0x200000;  // 2MB PSRAM limit
+            size_t copy_size = (extra_size > max_extended) ? max_extended : extra_size;
+
+            std::memcpy(rom_extended, data + rom.size(), copy_size);
+
+            size_t num_banks = copy_size / 0x4000;
+            ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks (%zu KB) into PSRAM",
+                     num_banks, copy_size / 1024);
+        } else if (size <= rom.size()) {
+            ESP_LOGI("MemoryBus", "ROM fits in base 32KB, no extended banks needed");
         }
-        
-        // Load ROM into base 32KB
-        copy_size = (size > rom.size()) ? rom.size() : size;
-        std::memcpy(rom.data(), data, copy_size);
-        
-        // Load additional banks into extended storage
-        if (size > rom.size()) {
-            size_t extra_size = size - rom.size();
-            size_t banks_to_copy = (extra_size > 0x100000) ? 0x100000 : extra_size;
-            banks_to_copy = (banks_to_copy > rom_extended.size()) ? rom_extended.size() : banks_to_copy;
-            std::memcpy(rom_extended.data(), data + rom.size(), banks_to_copy);
-            ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks", banks_to_copy / 0x4000);
+
+        // Initialize bank registers
+        rom_bank = 1;  // Start with bank 1 (bank 0 is fixed at 0x0000-0x3FFF)
+        ram_enabled = false;
+        ram_bank = 0;
+        mbc_mode = 0;
+
+        // Initialize RTC (MBC3)
+        if (mbc_type == 3) {
+            rtc_base_time = esp_timer_get_time() / 1000000;  // Convert µs to seconds
+            rtc_seconds = 0;
+            rtc_minutes = 0;
+            rtc_hours = 0;
+            rtc_days_low = 0;
+            rtc_days_high = 0;
+            ESP_LOGI("MemoryBus", "RTC initialized (MBC3)");
         }
+
+        ESP_LOGI("MemoryBus", "ROM loaded successfully: %zu KB total, MBC%d, battery=%d",
+                 size / 1024, mbc_type, has_battery);
     }
 
     void MemoryBus::stepTimer(uint8_t cycles)
@@ -270,6 +509,98 @@ namespace memory
         if (serial)
         {
             serial->clearDebugOutput();
+        }
+    }
+
+    esp_err_t MemoryBus::loadSRAM()
+    {
+        if (!has_battery || rom_path.empty())
+        {
+            return ESP_OK;  // No battery or ROM path not set
+        }
+
+        size_t sram_size = (mbc_type == 2) ? mbc2_ram.size() : external_ram.size();
+        uint8_t* sram_ptr = (mbc_type == 2) ? mbc2_ram.data() : external_ram.data();
+
+        esp_err_t ret = save_manager::load_sram(rom_path, sram_ptr, sram_size);
+        if (ret == ESP_OK)
+        {
+            ESP_LOGI("MemoryBus", "SRAM loaded from save file");
+        }
+        else if (ret == ESP_ERR_NOT_FOUND)
+        {
+            ESP_LOGI("MemoryBus", "No save file found, starting fresh");
+        }
+        return ret;
+    }
+
+    esp_err_t MemoryBus::saveSRAM()
+    {
+        if (!has_battery || rom_path.empty())
+        {
+            return ESP_OK;  // No battery or ROM path not set
+        }
+
+        size_t sram_size = (mbc_type == 2) ? mbc2_ram.size() : external_ram.size();
+        const uint8_t* sram_ptr = (mbc_type == 2) ? mbc2_ram.data() : external_ram.data();
+
+        return save_manager::save_sram(rom_path, sram_ptr, sram_size);
+    }
+
+    void MemoryBus::markSRAMDirty()
+    {
+        if (!has_battery)
+            return;
+
+        sram_dirty_counter++;
+
+        // DISABLED: Auto-save causes Cache error / MMU fault during SPI operations
+        // Save will be done manually or on game exit
+        // TODO: Implement async save in dedicated task on Core 0
+        #if 0
+        // Auto-save every 300 frames (~5 seconds at 60 FPS)
+        if (sram_dirty_counter >= 300)
+        {
+            sram_dirty_counter = 0;
+            esp_err_t ret = saveSRAM();
+            if (ret == ESP_OK)
+            {
+                ESP_LOGD("MemoryBus", "Auto-saved SRAM");
+            }
+        }
+        #endif
+    }
+
+    void MemoryBus::updateRTC()
+    {
+        if (mbc_type != 3)
+            return;
+
+        // Check if RTC is halted (bit 6 of rtc_days_high)
+        if (rtc_days_high & 0x40)
+            return;
+
+        // Get elapsed time since base time
+        int64_t current_time = esp_timer_get_time() / 1000000;  // Convert µs to seconds
+        int64_t elapsed = current_time - rtc_base_time;
+
+        // Calculate RTC values from elapsed time
+        rtc_seconds = elapsed % 60;
+        rtc_minutes = (elapsed / 60) % 60;
+        rtc_hours = (elapsed / 3600) % 24;
+        uint16_t days = elapsed / 86400;
+
+        rtc_days_low = days & 0xFF;
+
+        // Handle day overflow (>511 days)
+        if (days > 511)
+        {
+            rtc_days_high |= 0x80;  // Set carry bit
+            rtc_days_high = (rtc_days_high & 0xFE) | ((days >> 8) & 0x01);
+        }
+        else
+        {
+            rtc_days_high = (rtc_days_high & 0xFE) | ((days >> 8) & 0x01);
         }
     }
 }

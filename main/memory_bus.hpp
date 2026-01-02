@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 #include "esp_attr.h"
+#include "esp_err.h"
+#include "save_manager.hpp"
 
 namespace controller {
     class Joypad;
@@ -17,6 +19,10 @@ namespace timer {
 
 namespace serial {
     class Serial;
+}
+
+namespace apu {
+    class APU;
 }
 
 namespace memory
@@ -62,15 +68,26 @@ namespace memory
         ~MemoryBus();
 
         // 8-bit read/write operations
-        IRAM_ATTR uint8_t read(uint16_t address) const;
-        IRAM_ATTR void write(uint16_t address, uint8_t value);
+        IRAM_ATTR uint8_t read(uint16_t address) const __attribute__((hot));
+        IRAM_ATTR void write(uint16_t address, uint8_t value) __attribute__((hot));
 
         // 16-bit read/write operations (little-endian)
-        IRAM_ATTR uint16_t read16(uint16_t address) const;
-        IRAM_ATTR void write16(uint16_t address, uint16_t value);
+        IRAM_ATTR uint16_t read16(uint16_t address) const __attribute__((hot));
+        IRAM_ATTR void write16(uint16_t address, uint16_t value) __attribute__((hot));
 
         // Load ROM into memory
         void loadROM(const uint8_t* data, size_t size);
+
+        // Set ROM path for save management
+        void setROMPath(const std::string& path) { rom_path = path; }
+
+        // SRAM save/load
+        esp_err_t loadSRAM();
+        esp_err_t saveSRAM();
+        void markSRAMDirty();  // Call when SRAM is written, triggers auto-save
+
+        // RTC update (call periodically, e.g., every frame)
+        void updateRTC();
 
         // request an interruption
         inline void request_interrupt(IRQFlag flag) const {
@@ -100,24 +117,45 @@ namespace memory
         }
 
     private:
-        // ROM - 32KB (0x0000-0x7FFF) + MBC support
+        // ROM - 32KB (0x0000-0x7FFF) base + extended banks in PSRAM
         std::array<uint8_t, 0x8000> rom;
-        
+
         // MBC (Memory Bank Controller) registers
-        uint8_t mbc_type{0};     // 0=ROM only, 1=MBC1, 2=MBC2, 3=MBC3, 5=MBC5
-        uint8_t rom_bank{0};     // Current ROM bank (0-255 for MBC1)
+        uint8_t mbc_type{0};        // 0=ROM only, 1=MBC1, 2=MBC2, 3=MBC3, 5=MBC5
+        uint16_t rom_bank{1};       // Current ROM bank (1-511, bank 0 always at 0x0000-0x3FFF)
         bool ram_enabled{false};    // External RAM enabled
-        uint8_t ram_bank{0};     // Current RAM bank (0-15)
-        uint8_t mbc_mode{0};     // MBC1 mode register
-        
-        // Additional ROM storage for MBC (up to 1MB for now)
-        std::array<uint8_t, 0x100000> rom_extended;
+        uint8_t ram_bank{0};        // Current RAM bank (0-15)
+        uint8_t mbc_mode{0};        // MBC1 mode register
+        size_t rom_size{0};         // Total ROM size in bytes
+
+        // Extended ROM storage for MBC (allocated in PSRAM)
+        uint8_t* rom_extended{nullptr};  // Up to 2MB (128 banks × 16KB)
 
         // Video RAM - 8KB (0x8000-0x9FFF)
         std::array<uint8_t, 0x2000> vram;
 
-        // External RAM - 8KB (0xA000-0xBFFF)
-        std::array<uint8_t, 0x2000> external_ram;
+        // External RAM - 32KB (4 banks × 8KB) for MBC1/3/5
+        // MBC1/3: Up to 4 banks of 8KB (0x00-0x03)
+        // Note: MBC2 uses separate 512x4bit RAM (see mbc2_ram below)
+        std::array<uint8_t, 0x8000> external_ram;
+
+        // MBC2 internal RAM - 512 nibbles (256 bytes, only lower 4 bits used)
+        std::array<uint8_t, 0x200> mbc2_ram;
+
+        // RTC (Real-Time Clock) for MBC3
+        uint8_t rtc_seconds{0};
+        uint8_t rtc_minutes{0};
+        uint8_t rtc_hours{0};
+        uint8_t rtc_days_low{0};
+        uint8_t rtc_days_high{0};  // Bit 0: Day high, Bit 6: Halt, Bit 7: Day carry
+        uint8_t rtc_latch{0xFF};   // Latch data (0x00 -> 0x01 latches RTC)
+        bool rtc_latched{false};
+        int64_t rtc_base_time{0};  // Base time in seconds since boot
+
+        // SRAM save management
+        bool has_battery{false};
+        std::string rom_path{};
+        uint32_t sram_dirty_counter{0};  // Auto-save every N frames
 
         // Work RAM - 8KB (0xC000-0xDFFF)
         std::array<uint8_t, 0x2000> wram;
@@ -149,5 +187,8 @@ namespace memory
 
         // Serial port for debugging
         std::unique_ptr<serial::Serial> serial{nullptr};
+
+        // APU for audio (stub - no sound output)
+        std::unique_ptr<apu::APU> apu{nullptr};
     };
 }

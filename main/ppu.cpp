@@ -188,6 +188,10 @@ namespace ppu
 
     void PPU::renderScanline()
     {
+        // Skip rendering if frame skipping is active (optimization)
+        if (UNLIKELY(!should_render_frame))
+            return;
+
         ScanlineContext ctx = {
             .lcdc = readLCDC(),
             .scy = readSCY(),
@@ -207,12 +211,10 @@ namespace ppu
     {
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
 
-        if (UNLIKELY((ctx.lcdc & LCDC_BG_WINDOW_ENABLE) == 0))
-        {
-            for (int x = 0; x < display::LCD_WIDTH; ++x)
-                framebuffer[fb_row + x] = GB_PALETTE_BGR565[0];
-            return;
-        }
+        // Note: On DMG (original Game Boy), LCDC bit 0 does NOT disable the background!
+        // The background is always drawn. This bit only affects sprite priority.
+        // Only on Game Boy Color can this bit disable the background completely.
+        // We emulate DMG behavior, so we always render the background.
 
         const uint16_t tile_map_base =
             (ctx.lcdc & LCDC_BG_TILE_MAP) ? 0x9C00 : 0x9800;
@@ -230,6 +232,13 @@ namespace ppu
         const uint16_t tile_row_base =
             tile_map_base + (tile_y * TILES_PER_ROW);
 
+        // Pre-calculate palette lookup table for this scanline
+        uint16_t palette_lut[4];
+        palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+        palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
+        palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
+        palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
+
         // 20 tiles = 160 pixels
         for (int tile = 0; tile < 20; ++tile)
         {
@@ -243,7 +252,7 @@ namespace ppu
                 vram[tile_row_base - memory::VRAM_START + tile_x];
 
             uint16_t tile_addr;
-            if (signed_tiles)
+            if (UNLIKELY(signed_tiles))
                 tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
             else
                 tile_addr = tile_data_base + (tile_index * 16);
@@ -252,22 +261,26 @@ namespace ppu
             const uint8_t b1 = vram[row_addr - memory::VRAM_START];
             const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
 
+            // Decode entire tile row at once (8 pixels)
+            uint16_t tile_row[8];
             for (int i = 0; i < 8; ++i)
             {
-                const int screen_x = x_base + i;
-                if (screen_x >= display::LCD_WIDTH)
-                    break;
-
-                const uint8_t bit = 7 - ((px0 + i) & 0x7);
+                const uint8_t bit = 7 - i;
                 const uint8_t color =
                     ((b2 >> bit) & 1) << 1 |
                     ((b1 >> bit) & 1);
+                tile_row[i] = palette_lut[color];
+            }
 
-                const uint8_t pal =
-                    (ctx.bgp >> (color * 2)) & 0x03;
+            // Write pixels (handle scrolling offset)
+            for (int i = 0; i < 8; ++i)
+            {
+                const int screen_x = x_base + i;
+                if (UNLIKELY(screen_x >= display::LCD_WIDTH))
+                    break;
 
-                framebuffer[fb_row + screen_x] =
-                    GB_PALETTE_BGR565[pal];
+                const int tile_pixel = (px0 + i) & 0x7;
+                framebuffer[fb_row + screen_x] = tile_row[tile_pixel];
             }
         }
     }
@@ -295,6 +308,13 @@ namespace ppu
         const uint8_t tile_y = window_line_counter >> 3;
         const uint8_t pixel_y = window_line_counter & 0x7;
 
+        // Pre-calculate palette lookup table (same as background)
+        uint16_t palette_lut[4];
+        palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+        palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
+        palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
+        palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
+
         for (int x = std::max(0, win_x_start); x < display::LCD_WIDTH; x += 8)
         {
             const int win_x = x - win_x_start;
@@ -308,7 +328,7 @@ namespace ppu
                 vram[map_addr - memory::VRAM_START];
 
             uint16_t tile_addr;
-            if (signed_tiles)
+            if (UNLIKELY(signed_tiles))
                 tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
             else
                 tile_addr = tile_data_base + (tile_index * 16);
@@ -317,24 +337,28 @@ namespace ppu
             const uint8_t b1 = vram[row_addr - memory::VRAM_START];
             const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
 
+            // Decode entire tile row at once
+            uint16_t tile_row[8];
             for (int i = 0; i < 8; ++i)
             {
-                const int sx = x + i;
-                if (sx < 0 || sx >= display::LCD_WIDTH)
-                    continue;
-                if (sx < win_x_start)
-                    continue;
-
-                const uint8_t bit = 7 - ((px0 + i) & 0x7);
+                const uint8_t bit = 7 - i;
                 const uint8_t color =
                     ((b2 >> bit) & 1) << 1 |
                     ((b1 >> bit) & 1);
+                tile_row[i] = palette_lut[color];
+            }
 
-                const uint8_t pal =
-                    (ctx.bgp >> (color * 2)) & 0x03;
+            // Write pixels
+            for (int i = 0; i < 8; ++i)
+            {
+                const int sx = x + i;
+                if (UNLIKELY(sx < 0 || sx >= display::LCD_WIDTH))
+                    continue;
+                if (UNLIKELY(sx < win_x_start))
+                    continue;
 
-                framebuffer[fb_row + sx] =
-                    GB_PALETTE_BGR565[pal];
+                const int tile_pixel = (px0 + i) & 0x7;
+                framebuffer[fb_row + sx] = tile_row[tile_pixel];
             }
         }
 
@@ -374,7 +398,10 @@ namespace ppu
 
     void PPU::renderSprites(const ScanlineContext &ctx)
     {
-        if ((ctx.lcdc & LCDC_OBJ_ENABLE) == 0)
+        if (UNLIKELY((ctx.lcdc & LCDC_OBJ_ENABLE) == 0))
+            return;
+
+        if (UNLIKELY(visible_sprite_count == 0))
             return;
 
         const uint8_t sprite_height =
@@ -382,16 +409,29 @@ namespace ppu
 
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
 
+        // Pre-calculate sprite palettes
+        uint16_t palette_lut0[4], palette_lut1[4];
+        palette_lut0[0] = palette_lut1[0] = 0;  // Color 0 is always transparent
+        palette_lut0[1] = GB_PALETTE_BGR565[(ctx.obp0 >> 2) & 0x03];
+        palette_lut0[2] = GB_PALETTE_BGR565[(ctx.obp0 >> 4) & 0x03];
+        palette_lut0[3] = GB_PALETTE_BGR565[(ctx.obp0 >> 6) & 0x03];
+        palette_lut1[1] = GB_PALETTE_BGR565[(ctx.obp1 >> 2) & 0x03];
+        palette_lut1[2] = GB_PALETTE_BGR565[(ctx.obp1 >> 4) & 0x03];
+        palette_lut1[3] = GB_PALETTE_BGR565[(ctx.obp1 >> 6) & 0x03];
+
+        // Background color 0 (for sprite priority check)
+        const uint16_t bg_color = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+
         for (int i = visible_sprite_count - 1; i >= 0; --i)
         {
             const OAMEntry &s = visible_sprites[i];
 
             int y_in = ly - (s.y - 16);
-            if (s.attributes & OAM_Y_FLIP)
+            if (UNLIKELY(s.attributes & OAM_Y_FLIP))
                 y_in = sprite_height - 1 - y_in;
 
             uint8_t tile = s.tile_index;
-            if (sprite_height == 16)
+            if (UNLIKELY(sprite_height == 16))
             {
                 tile &= 0xFE;
                 if (y_in >= 8)
@@ -405,31 +445,28 @@ namespace ppu
             const uint8_t b1 = vram[addr - memory::VRAM_START];
             const uint8_t b2 = vram[addr - memory::VRAM_START + 1];
 
-            const uint8_t pal =
-                (s.attributes & OAM_PALETTE) ? ctx.obp1 : ctx.obp0;
+            const uint16_t* palette = (s.attributes & OAM_PALETTE) ? palette_lut1 : palette_lut0;
+            const bool has_priority = s.attributes & OAM_PRIORITY;
+            const bool x_flip = s.attributes & OAM_X_FLIP;
 
             for (int x = 0; x < 8; ++x)
             {
                 const int sx = (s.x - 8) + x;
-                if (sx < 0 || sx >= display::LCD_WIDTH)
+                if (UNLIKELY(sx < 0 || sx >= display::LCD_WIDTH))
                     continue;
 
-                const uint8_t bit =
-                    (s.attributes & OAM_X_FLIP) ? x : (7 - x);
-
+                const uint8_t bit = x_flip ? x : (7 - x);
                 const uint8_t color =
                     ((b2 >> bit) & 1) << 1 |
                     ((b1 >> bit) & 1);
 
-                if (color == 0)
+                if (UNLIKELY(color == 0))
                     continue;
 
-                if ((s.attributes & OAM_PRIORITY) &&
-                    framebuffer[fb_row + sx] != GB_PALETTE_BGR565[0])
+                if (UNLIKELY(has_priority && framebuffer[fb_row + sx] != bg_color))
                     continue;
 
-                const uint8_t pc = (pal >> (color * 2)) & 0x03;
-                framebuffer[fb_row + sx] = GB_PALETTE_BGR565[pc];
+                framebuffer[fb_row + sx] = palette[color];
             }
         }
     }
@@ -457,6 +494,7 @@ namespace ppu
         ESP_LOGI("PPU", "Render task started on core %d", xPortGetCoreID());
 
         uint16_t *frame = nullptr;
+        int frame_count = 0;
 
         while (true)
         {
@@ -471,28 +509,12 @@ namespace ppu
 
     void PPU::queue_frame_for_rendering()
     {
-        if (!frame_queue || !should_render_frame)
+        if (!frame_queue)
             return;
 
-        // Simple line buffer approach - no dynamic allocation
-        static uint16_t line_buffer[160]; // One scanline in internal RAM
-        // Process scanline by scanline (line-by-line rendering)
-        for (int line = 0; line < 144; line++) {
-            // Clear line buffer
-            memset(line_buffer, 0, sizeof(line_buffer));
-            
-            // Simple scanline processing (background only for now)
-            for (int x = 0; x < 160; x++) {
-                line_buffer[x] = 0x0000; // Simple black background (RGB565)
-            }
-            
-            // Copy line to framebuffer
-            if (should_render_frame) {
-                memcpy(framebuffer + line * 160, line_buffer, sizeof(line_buffer));
-            }
-        }
-
-        // Envoie le pointeur du framebuffer courant (sans copie)
+        // Always queue the framebuffer for display
+        // Even if rendering was skipped, we want to show the last frame
+        // The should_render_frame flag only affects whether we UPDATE the framebuffer
         uint16_t *fb_ptr = framebuffer;
         xQueueOverwrite(frame_queue, &fb_ptr);
     }

@@ -45,12 +45,8 @@ namespace emulator {
             static const char* TAG;
             static constexpr int64_t FRAME_US = 16742; // ~59.7 FPS
             static constexpr int MENU_FRAME_MS = 50; // ~20 FPS for menu
-            
-            // Frame skip optimization using XOR bit flip
-            mutable uint8_t frame_skip_bit{0x00};
-            
-            // Performance monitoring variables
-            mutable uint32_t skipped_consecutive{0};
+
+            // Performance monitoring: lag accumulator for dynamic frame skipping
             mutable int64_t lag_us{0};
     };
 }
