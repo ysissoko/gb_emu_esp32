@@ -72,39 +72,51 @@ namespace memory
 
     uint8_t MemoryBus::read(uint16_t address) const
     {
+        // Taille réelle du segment "extended" (banks >= 2).
+        // Robustesse: éviter tout underflow si rom_size < 0x8000.
+        const size_t extended_size = (rom_size > 0x8000) ? (rom_size - 0x8000) : 0;
+
         // Optimized: Use high nibble (top 4 bits) for fast region lookup
-        // This reduces the number of comparisons significantly
         switch (address >> 12) {  // Get top 4 bits (0x0-0xF)
             case 0x0: case 0x1: case 0x2: case 0x3:
-                // ROM Bank 0 (0x0000-0x3FFF) - always fixed to first 16KB
+                // ROM Bank 0 (0x0000-0x3FFF)
+                // NOTE: (optionnel) MBC1 mode 1 peut bank-switcher ici, mais non requis
+                // pour corriger Wario Land; on garde ton comportement actuel.
                 return rom[address];
 
             case 0x4: case 0x5: case 0x6: case 0x7:
+            {
                 // ROM Bank N (0x4000-0x7FFF) - switchable bank
-                if (UNLIKELY(mbc_type == 0 || !rom_extended)) {
-                    // ROM ONLY or no extended ROM - use base ROM
+
+                // ROM ONLY / pas de ROM extended / ROM <= 32KB
+                if (UNLIKELY(mbc_type == 0 || !rom_extended || extended_size == 0)) {
+                    // Dans ce cas, tout est dans rom[]
                     return rom[address];
-                } else {
-                    // MBC: map to extended ROM based on current bank
-                    uint16_t effective_bank = rom_bank;
-
-                    // MBC1 mode 1: only use bits 0-4 (ignore upper 2 bits)
-                    if (mbc_type == 1 && mbc_mode == 1) {
-                        effective_bank = rom_bank & 0x1F;
-                    }
-
-                    // Bank 0 is forbidden in switchable region (auto-corrected to bank 1)
-                    if (effective_bank == 0) effective_bank = 1;
-
-                    size_t bank_offset = (effective_bank - 1) * 0x4000;  // -1 because bank 0 is in base ROM
-                    size_t offset = bank_offset + (address - 0x4000);
-
-                    // Bounds check (unlikely to fail in normal operation)
-                    if (LIKELY(offset < rom_size - 0x8000)) {
-                        return rom_extended[offset];
-                    }
-                    return 0xFF;  // Out of bounds
                 }
+
+                // IMPORTANT: Ne PAS masquer rom_bank en MBC1 mode 1 ici.
+                // La zone 0x4000-0x7FFF utilise la banque ROM "complète".
+                uint16_t bank = rom_bank;
+
+                // Bank 0 est interdit dans la zone switchable
+                if (bank == 0) bank = 1;
+
+                // Bank 1 est déjà dans rom[] (0x4000-0x7FFF)
+                if (bank == 1) {
+                    return rom[address];
+                }
+
+                // Banks >= 2 sont dans rom_extended, avec TON layout:
+                // rom_extended[0] => bank 2
+                // rom_extended[0x4000] => bank 3
+                const size_t bank_index = static_cast<size_t>(bank - 2);
+                const size_t offset = bank_index * 0x4000 + (address - 0x4000);
+
+                if (LIKELY(offset < extended_size)) {
+                    return rom_extended[offset];
+                }
+                return 0xFF;
+            }
 
             case 0x8: case 0x9:
                 // Video RAM (0x8000-0x9FFF)
@@ -162,7 +174,6 @@ namespace memory
 
             case 0xF:
                 // High memory region (0xF000-0xFFFF)
-                // Need further subdivision
                 if (address < 0xFE00) {
                     // Echo RAM (0xF000-0xFDFF)
                     return wram[address - ECHO_RAM_START];
@@ -177,7 +188,6 @@ namespace memory
                 }
                 else if (address < 0xFF80) {
                     // I/O Registers (0xFF00-0xFF7F)
-                    // Handle special registers with direct checks
                     if (address == IO_REGISTERS_START) {
                         // Joypad register (0xFF00)
                         uint8_t current_state = joypad->read(io_registers[0]);
@@ -379,12 +389,10 @@ namespace memory
                     else if (address == IF_REGISTER) if_register = value;
                     else if (address == 0xFF46) {
                         // DMA Transfer (0xFF46): Copy 160 bytes from XX00-XX9F to OAM (0xFE00-0xFE9F)
-                        // Value written is the source address high byte (XX)
                         uint16_t source = value << 8;  // XX00
                         for (uint16_t i = 0; i < 0xA0; i++) {
                             oam[i] = read(source + i);
                         }
-                        // DMA takes 160 M-cycles but we don't emulate the timing accurately
                         io_registers[0x46] = value;
                     }
                     else if (address >= 0xFF10 && address <= 0xFF3F) {
@@ -455,8 +463,8 @@ namespace memory
             // Check if cartridge has battery-backed SRAM
             has_battery = save_manager::has_battery(cart_type);
 
-            // Calculate expected ROM size from header
-            size_t expected_size = 0x8000 << rom_size_code;  // 32KB << code
+            // Info (approx) for logs
+            size_t expected_size = 0x8000u << rom_size_code;
 
             ESP_LOGI("MemoryBus", "ROM Header: type=0x%02X (MBC%d), size_code=0x%02X (%zu KB expected), actual=%zu KB, battery=%d",
                      cart_type, mbc_type, rom_size_code, expected_size / 1024, size / 1024, has_battery);
@@ -577,7 +585,6 @@ namespace memory
         // Save will be done manually or on game exit
         // TODO: Implement async save in dedicated task on Core 0
         #if 0
-        // Auto-save every 300 frames (~5 seconds at 60 FPS)
         if (sram_dirty_counter >= 300)
         {
             sram_dirty_counter = 0;
