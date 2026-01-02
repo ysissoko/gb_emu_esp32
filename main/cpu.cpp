@@ -67,7 +67,7 @@ namespace cpu
 
             while (cycles < CYCLES_PER_SCANLINE)
             {
-                uint8_t cpu_cycles = step();
+                uint16_t cpu_cycles = step();  // uint16_t to support HALT optimization
                 cycles += cpu_cycles;
                 timer_batch += cpu_cycles;
 
@@ -92,6 +92,50 @@ namespace cpu
 
         if (UNLIKELY(ppu.isFrameReady()))
             ppu.clearFrameReady();
+    }
+
+    /// @brief Calculate cycles until next interrupt during HALT
+    /// @return Number of cycles to skip (max 456 per scanline)
+    uint16_t CPU::calculate_halt_cycles()
+    {
+        // Read interrupt enable and flags
+        uint8_t ie = mmu.read(0xFFFF);
+        uint8_t if_ = mmu.read(memory::IF_REGISTER);
+
+        // If an interrupt is already pending, wake up immediately
+        if ((ie & if_) != 0)
+            return 4;
+
+        // Calculate cycles until VBLANK interrupt (most common)
+        // VBLANK occurs when LY reaches 144
+        constexpr uint16_t CYCLES_PER_SCANLINE = 456;
+        constexpr uint8_t VBLANK_LINE = 144;
+        constexpr uint8_t TOTAL_SCANLINES = 154;
+
+        // Only optimize if VBLANK interrupt is enabled
+        if (ie & 0x01)  // VBLANK interrupt bit
+        {
+            uint8_t current_ly = ppu.getLy();
+            uint16_t current_mode_cycles = ppu.getModeCycles();
+
+            if (current_ly < VBLANK_LINE)
+            {
+                // We're before VBLANK, calculate cycles until LY=144
+                uint16_t scanlines_remaining = VBLANK_LINE - current_ly;
+                uint16_t cycles_in_current_scanline = CYCLES_PER_SCANLINE - current_mode_cycles;
+
+                // Total cycles = finish current scanline + remaining full scanlines
+                uint16_t total_cycles = cycles_in_current_scanline +
+                                       ((scanlines_remaining - 1) * CYCLES_PER_SCANLINE);
+
+                // Cap at one scanline to avoid too long HALT
+                return (total_cycles > CYCLES_PER_SCANLINE) ? CYCLES_PER_SCANLINE : total_cycles;
+            }
+        }
+
+        // Fallback: advance by one scanline worth of cycles
+        // This handles STAT, TIMER, SERIAL interrupts which are harder to predict
+        return CYCLES_PER_SCANLINE;
     }
 
     bool CPU::test_interrupts_flags()
@@ -134,15 +178,20 @@ namespace cpu
     }
 
     /// @brief step executes a single CPU instruction
-    /// @return the number of cycles the instruction took
-    uint8_t CPU::step()
+    /// @return the number of cycles the instruction took (up to 456 during HALT)
+    uint16_t CPU::step()
     {
         // DEBUG: All debug logging disabled for performance
 
-        // HALT is rare, CPU normally executes instructions
+        // HALT optimization: calculate cycles until next interrupt
+        // NOTE: run_frame() will advance PPU and timer with these cycles
         if (UNLIKELY(cpu_stopped))
         {
-            return 4; // HALT consumes cycles but doesn't execute
+            // Calculate optimal cycles to skip until next interrupt
+            uint16_t halt_cycles = calculate_halt_cycles();
+
+            // Return cycles (PPU/timer advanced by run_frame(), not here)
+            return halt_cycles;
         }
 
         // Handle EI 1-instruction delay: activate IME before next instruction

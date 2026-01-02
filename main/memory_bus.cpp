@@ -15,7 +15,7 @@
 namespace memory
 {
     MemoryBus::MemoryBus(const std::shared_ptr<controller::Joypad>& joypad)
-        : rom{0}, vram{0}, external_ram{0}, wram{0},
+        : rom{0}, vram{0}, wram{0},
           oam{0}, io_registers{0}, hram{0}, ie_register{0}, if_register{0},
           prev_joypad_state{0xFF}, joypad{joypad}
     {
@@ -33,6 +33,20 @@ namespace memory
             memset(rom_extended, 0xFF, 0x200000);
         }
 
+        // Allocate external RAM in PSRAM (32KB for MBC1/3/5)
+        external_ram = static_cast<uint8_t*>(
+            heap_caps_malloc(EXTERNAL_RAM_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+        if (!external_ram)
+        {
+            ESP_LOGE("MemoryBus", "Failed to allocate external RAM in PSRAM!");
+        }
+        else
+        {
+            ESP_LOGI("MemoryBus", "Allocated 32KB external RAM in PSRAM");
+            memset(external_ram, 0x00, EXTERNAL_RAM_SIZE);
+        }
+
         // Initialize timer (must be after member initialization)
         timer = std::make_unique<timer::Timer>(*this);
         // Initialize serial port
@@ -43,11 +57,16 @@ namespace memory
 
     MemoryBus::~MemoryBus()
     {
-        // Free PSRAM allocation
+        // Free PSRAM allocations
         if (rom_extended)
         {
             heap_caps_free(rom_extended);
             rom_extended = nullptr;
+        }
+        if (external_ram)
+        {
+            heap_caps_free(external_ram);
+            external_ram = nullptr;
         }
     }
 
@@ -127,7 +146,7 @@ namespace memory
                     size_t offset = (effective_ram_bank * 0x2000) + (address - EXTERNAL_RAM_START);
 
                     // Bounds check
-                    if (LIKELY(offset < external_ram.size())) {
+                    if (LIKELY(external_ram && offset < EXTERNAL_RAM_SIZE)) {
                         return external_ram[offset];
                     }
                     return 0xFF;
@@ -314,7 +333,7 @@ namespace memory
                     size_t offset = (effective_ram_bank * 0x2000) + (address - EXTERNAL_RAM_START);
 
                     // Bounds check
-                    if (LIKELY(offset < external_ram.size())) {
+                    if (LIKELY(external_ram && offset < EXTERNAL_RAM_SIZE)) {
                         external_ram[offset] = value;
                         markSRAMDirty();
                     }
@@ -519,8 +538,8 @@ namespace memory
             return ESP_OK;  // No battery or ROM path not set
         }
 
-        size_t sram_size = (mbc_type == 2) ? mbc2_ram.size() : external_ram.size();
-        uint8_t* sram_ptr = (mbc_type == 2) ? mbc2_ram.data() : external_ram.data();
+        size_t sram_size = (mbc_type == 2) ? mbc2_ram.size() : EXTERNAL_RAM_SIZE;
+        uint8_t* sram_ptr = (mbc_type == 2) ? mbc2_ram.data() : external_ram;
 
         esp_err_t ret = save_manager::load_sram(rom_path, sram_ptr, sram_size);
         if (ret == ESP_OK)
@@ -541,8 +560,8 @@ namespace memory
             return ESP_OK;  // No battery or ROM path not set
         }
 
-        size_t sram_size = (mbc_type == 2) ? mbc2_ram.size() : external_ram.size();
-        const uint8_t* sram_ptr = (mbc_type == 2) ? mbc2_ram.data() : external_ram.data();
+        size_t sram_size = (mbc_type == 2) ? mbc2_ram.size() : EXTERNAL_RAM_SIZE;
+        const uint8_t* sram_ptr = (mbc_type == 2) ? mbc2_ram.data() : external_ram;
 
         return save_manager::save_sram(rom_path, sram_ptr, sram_size);
     }

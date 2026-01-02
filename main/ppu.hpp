@@ -102,6 +102,8 @@ namespace ppu
         static void render_task(void* arg);
         void queue_frame_for_rendering();
         bool init_pipeline();
+        inline uint8_t getLy() const { return ly; }
+        inline uint8_t getModeCycles() const { return mode_cycles; }
         
     private:
         memory::MemoryBus& mmu;

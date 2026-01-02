@@ -104,13 +104,6 @@ namespace display::menu
         bool a_pressed = joypad->buttonAPressed();
         bool start_pressed = joypad->buttonStartPressed();
 
-        // Log button states every 50 frames (~2.5 seconds at 20fps)
-        if (++log_counter % 50 == 0)
-        {
-            ESP_LOGI(TAG, "Buttons: UP=%d DOWN=%d A=%d START=%d",
-                     up_pressed, down_pressed, a_pressed, start_pressed);
-        }
-
         // Detect rising edge (button just pressed, not held)
         if (up_pressed && !prev_up)
         {
@@ -149,8 +142,6 @@ namespace display::menu
         // Don't draw if ROM is already selected
         if (rom_selected)
         {
-            // Clear the framebuffer RGB565 (only the allocated chunk!)
-            clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
             return;
         }
 

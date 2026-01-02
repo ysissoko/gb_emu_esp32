@@ -41,8 +41,6 @@ namespace display::menu {
             bool initialized{false};
             bool needs_redraw{true};
 
-            // Framebuffer natif RGB565 pour le menu - réduit pour économiser la RAM
-            // On utilise un framebuffer de seulement 80 lignes qu'on redessine en 4 passes
             static constexpr int MENU_WIDTH = 240;
             static constexpr int MENU_HEIGHT = 320;
             static constexpr int FB_CHUNK_HEIGHT = 80;  // Framebuffer par morceaux

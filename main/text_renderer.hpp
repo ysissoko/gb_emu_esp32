@@ -6,6 +6,10 @@
 
 namespace display::menu {
 
+constexpr uint16_t swap16(uint16_t v) {
+    return (v << 8) | (v >> 8);
+}
+
 // Helper to convert RGB565 to BGR565 for ST7789V Seengreat
 constexpr uint16_t rgb_to_bgr565(uint16_t rgb) {
     uint16_t r = (rgb >> 11) & 0x1F;  // Extract 5 red bits
@@ -136,7 +140,7 @@ inline void draw_char_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
                 int px = x + col;
                 int py = y + row;
                 if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {
-                    framebuffer[py * fb_width + px] = color;
+                    framebuffer[py * fb_width + px] = swap16(color);
                 }
             }
         }

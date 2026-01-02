@@ -134,10 +134,11 @@ namespace memory
         // Video RAM - 8KB (0x8000-0x9FFF)
         std::array<uint8_t, 0x2000> vram;
 
-        // External RAM - 32KB (4 banks × 8KB) for MBC1/3/5
+        // External RAM - 32KB (4 banks × 8KB) for MBC1/3/5 (allocated in PSRAM)
         // MBC1/3: Up to 4 banks of 8KB (0x00-0x03)
         // Note: MBC2 uses separate 512x4bit RAM (see mbc2_ram below)
-        std::array<uint8_t, 0x8000> external_ram;
+        uint8_t* external_ram{nullptr};  // Allocated in PSRAM to save SRAM
+        static constexpr size_t EXTERNAL_RAM_SIZE = 0x8000;  // 32KB
 
         // MBC2 internal RAM - 512 nibbles (256 bytes, only lower 4 bits used)
         std::array<uint8_t, 0x200> mbc2_ram;
