@@ -52,6 +52,7 @@ namespace cpu
         bool cpu_stopped{false};
         bool ime_enabled{false};
         bool ei_pending{false};  // EI has 1-instruction delay
+        bool halt_bug{false};
 
         IRAM_ATTR inline bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
         IRAM_ATTR inline bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };

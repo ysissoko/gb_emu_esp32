@@ -67,7 +67,7 @@ namespace cpu
 
             while (cycles < CYCLES_PER_SCANLINE)
             {
-                uint16_t cpu_cycles = step();  // uint16_t to support HALT optimization
+                uint16_t cpu_cycles = step(); // uint16_t to support HALT optimization
                 cycles += cpu_cycles;
                 timer_batch += cpu_cycles;
 
@@ -113,7 +113,7 @@ namespace cpu
         constexpr uint8_t TOTAL_SCANLINES = 154;
 
         // Only optimize if VBLANK interrupt is enabled
-        if (ie & 0x01)  // VBLANK interrupt bit
+        if (ie & 0x01) // VBLANK interrupt bit
         {
             uint8_t current_ly = ppu.getLy();
             uint16_t current_mode_cycles = ppu.getModeCycles();
@@ -126,7 +126,7 @@ namespace cpu
 
                 // Total cycles = finish current scanline + remaining full scanlines
                 uint16_t total_cycles = cycles_in_current_scanline +
-                                       ((scanlines_remaining - 1) * CYCLES_PER_SCANLINE);
+                                        ((scanlines_remaining - 1) * CYCLES_PER_SCANLINE);
 
                 // Cap at one scanline to avoid too long HALT
                 return (total_cycles > CYCLES_PER_SCANLINE) ? CYCLES_PER_SCANLINE : total_cycles;
@@ -144,11 +144,13 @@ namespace cpu
         uint8_t ie = mmu.read(memory::IE_REGISTER);
         // interrupt flag read
         uint8_t if_ = mmu.read(memory::IF_REGISTER);
+        // if an interrupt is requested
+        auto requested = if_;
         // pending interrupts calculated from enabled interrupts and currently requested interrupts
         uint8_t pending = ie & if_;
 
         // Wake CPU from HALT if any interrupt is pending (rare)
-        if (UNLIKELY(pending != 0))
+        if (UNLIKELY(requested != 0))
         {
             cpu_stopped = false;
         }
@@ -181,8 +183,6 @@ namespace cpu
     /// @return the number of cycles the instruction took (up to 456 during HALT)
     uint16_t CPU::step()
     {
-        // DEBUG: All debug logging disabled for performance
-
         // HALT optimization: calculate cycles until next interrupt
         // NOTE: run_frame() will advance PPU and timer with these cycles
         if (UNLIKELY(cpu_stopped))
@@ -201,7 +201,17 @@ namespace cpu
             ime_enabled = true;
         }
 
-        uint8_t opcode = mmu.read(pc++);
+        uint8_t opcode;
+
+        if (halt_bug)
+        {
+            opcode = mmu.read(pc);  // PC volontairement NON incrémenté
+            halt_bug = false;       // one-shot
+        }
+        else
+        {
+            opcode = mmu.read(pc++);
+        }
 
         return execute(opcode);
     }
@@ -389,8 +399,37 @@ namespace cpu
             h = mmu.read(pc++);
             return 8;
         case 0x27: // DAA
-            // Decimal Adjust for Addition
+        {
+            uint8_t correction = 0;
+            bool set_carry = false;
+
+            if (!readNFlag())
+            { // après addition
+                if (readHFlag() || (a & 0x0F) > 9)
+                    correction |= 0x06;
+                if (readCFlag() || a > 0x99)
+                {
+                    correction |= 0x60;
+                    set_carry = true;
+                }
+                a += correction;
+            }
+            else
+            { // après soustraction
+                if (readHFlag())
+                    correction |= 0x06;
+                if (readCFlag())
+                    correction |= 0x60;
+                a -= correction;
+            }
+
+            setZFlag(a == 0);
+            setHFlag(false);
+            if (set_carry)
+                setCFlag(true);
+        }
             return 4;
+
         case 0x28: // JR Z, r8
         {
             int8_t n8 = mmu.read(pc++);
@@ -540,8 +579,23 @@ namespace cpu
             }
             break;
         case 0x76: // HALT
-            cpu_stopped = true;
+        {
+            uint8_t ie = mmu.read(memory::IE_REGISTER);
+            uint8_t if_ = mmu.read(memory::IF_REGISTER);
+
+            if (!ime_enabled && (ie & if_))
+            {
+                // HALT bug
+                halt_bug = true;
+                cpu_stopped = false;
+            }
+            else
+            {
+                cpu_stopped = true;
+            }
+        }
             return 4;
+
         case 0x77: // LD (HL), A
             mmu.write(getHL(), a);
             return 8;
@@ -777,14 +831,17 @@ namespace cpu
         }
             return 24;
         case 0xCE: // ADC A, d8
-            setHFlag(((a & 0x0F) + (mmu.read(pc) & 0x0F) + (readCFlag() ? 1 : 0)) > 0x0F);
-            setCFlag(((uint16_t)a + (uint16_t)mmu.read(pc) + (readCFlag() ? 1 : 0)) > 0xFF);
+        {
+            uint8_t carry_in = readCFlag() ? 1 : 0;
+            setHFlag((a & 0x0F) + (mmu.read(pc) & 0x0F) + carry_in > 0x0F);
+            setCFlag(((uint16_t)a + (uint16_t)mmu.read(pc) + carry_in) > 0xFF);
             {
                 uint8_t value = mmu.read(pc++);
-                a += value + (readCFlag() ? 1 : 0);
+                a += value + carry_in;
             }
             setZFlag(a == 0);
             setNFlag(false);
+        }
             return 8;
         case 0xCF: // RST 08H
             sp -= 2;
@@ -884,15 +941,19 @@ namespace cpu
             return 12;
         }
         case 0xDE: // SBC A, d8
-            setHFlag((a & 0x0F) < (mmu.read(pc) & 0x0F) + (readCFlag() ? 1 : 0));
-            setCFlag(a < mmu.read(pc) + (readCFlag() ? 1 : 0));
+        {
+            auto carry_in = readCFlag() ? 1 : 0;
+            setHFlag((a & 0x0F) < (mmu.read(pc) & 0x0F) + carry_in);
+            setCFlag(a < mmu.read(pc) + carry_in);
             {
                 uint8_t value = mmu.read(pc++);
-                a -= value + (readCFlag() ? 1 : 0);
+                a -= value + carry_in;
             }
             setZFlag(a == 0);
             setNFlag(true);
+        }
             return 8;
+        
         case 0xDF: // RST 18H
             sp -= 2;
             mmu.write16(sp, pc);
@@ -984,7 +1045,7 @@ namespace cpu
             return 8;
         case 0xF3: // DI (Disable Interrupts immediately, no delay)
             ime_enabled = false;
-            ei_pending = false;  // Cancel any pending EI
+            ei_pending = false; // Cancel any pending EI
             return 4;
         case 0xF5: // PUSH AF
         {
