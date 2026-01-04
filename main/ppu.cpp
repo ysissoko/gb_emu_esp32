@@ -70,8 +70,12 @@ namespace ppu
     // --- Core step/state machine (inchangé) ---
     void PPU::step(uint8_t cycles)
     {
-        if (UNLIKELY((readLCDC() & LCDC_LCD_ENABLE) == 0))
+        if (UNLIKELY((readLCDC() & LCDC_LCD_ENABLE) == 0)) {
+            mode = Mode::HBLANK;
+            mode_cycles = 0;
+            updateLY(0);
             return;
+        }
 
         mode_cycles += cycles;
 
@@ -135,29 +139,37 @@ namespace ppu
 
     void PPU::setMode(Mode new_mode)
     {
+        if (mode == new_mode)
+            return;
+
+        // Read previous STAT BEFORE modification (important!)
+        uint8_t prev_stat = mmu.read(0xFF41);
+        Mode prev_mode = mode;
+
         mode = new_mode;
 
-        uint8_t stat = mmu.read(0xFF41);
-        stat = (stat & 0xFC) | static_cast<uint8_t>(new_mode);
+        // Update mode bits (0–1)
+        uint8_t stat = (prev_stat & 0xFC) | static_cast<uint8_t>(new_mode);
         mmu.write(0xFF41, stat);
 
         bool request_stat_int = false;
+
         switch (new_mode)
         {
-        case Mode::HBLANK:
-            if (stat & 0x08)
-                request_stat_int = true;
-            break;
-        case Mode::VBLANK:
-            if (stat & 0x10)
-                request_stat_int = true;
-            break;
-        case Mode::OAM_SCAN:
-            if (stat & 0x20)
-                request_stat_int = true;
-            break;
-        case Mode::DRAWING:
-            break;
+            case Mode::HBLANK:
+                // STAT bit 3
+                request_stat_int = (prev_stat & 0x08);
+                break;
+            case Mode::VBLANK:
+                // STAT bit 4
+                request_stat_int = (prev_stat & 0x10);
+                break;
+            case Mode::OAM_SCAN:
+                // STAT bit 5
+                request_stat_int = (prev_stat & 0x20);
+                break;
+            default:
+                break;
         }
 
         if (request_stat_int)
@@ -172,14 +184,14 @@ namespace ppu
         uint8_t lyc = mmu.read(0xFF45);
         uint8_t stat = mmu.read(0xFF41);
 
-        if (ly == lyc)
-        {
+        bool prev_match = stat & 0x04;
+
+        if (ly == lyc) {
             stat |= 0x04;
-            if (stat & 0x40)
+            if (!prev_match && (stat & 0x40)) {
                 mmu.request_interrupt(memory::IRQFlag::IRQ_LCD_STAT);
-        }
-        else
-        {
+            }
+        } else {
             stat &= ~0x04;
         }
 

@@ -63,37 +63,28 @@ namespace cpu
         for (int sl = 0; sl < TOTAL_SCANLINES; ++sl)
         {
             int cycles = 0;
-            int timer_batch = 0;
 
             while (cycles < CYCLES_PER_SCANLINE)
             {
                 uint16_t cpu_cycles = step(); // uint16_t to support HALT optimization
                 cycles += cpu_cycles;
-                timer_batch += cpu_cycles;
 
-                // Batch timer updates every 32 cycles (timer runs at much lower freq than CPU)
-                if (UNLIKELY(timer_batch >= 32))
-                {
-                    mmu.stepTimer(timer_batch);
-                    timer_batch = 0;
-                }
+                // Update timer immediately after each instruction
+                mmu.stepTimer(cpu_cycles);
 
+                // Update PPU
                 ppu.step(cpu_cycles);
 
                 // Check interrupts every instruction (required for accuracy)
                 if (UNLIKELY(test_interrupts_flags()))
                     cycles += INTERRUPT_CYCLES;
             }
-
-            // Flush remaining timer cycles at end of scanline
-            if (LIKELY(timer_batch > 0))
-                mmu.stepTimer(timer_batch);
         }
 
         if (UNLIKELY(ppu.isFrameReady()))
             ppu.clearFrameReady();
     }
-
+    
     /// @brief Calculate cycles until next interrupt during HALT
     /// @return Number of cycles to skip (max 456 per scanline)
     uint16_t CPU::calculate_halt_cycles()
@@ -205,8 +196,8 @@ namespace cpu
 
         if (halt_bug)
         {
-            opcode = mmu.read(pc);  // PC volontairement NON incrémenté
-            halt_bug = false;       // one-shot
+            opcode = mmu.read(pc); // PC volontairement NON incrémenté
+            halt_bug = false;      // one-shot
         }
         else
         {
@@ -953,7 +944,7 @@ namespace cpu
             setNFlag(true);
         }
             return 8;
-        
+
         case 0xDF: // RST 18H
             sp -= 2;
             mmu.write16(sp, pc);
