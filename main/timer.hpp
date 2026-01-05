@@ -42,9 +42,6 @@ private:
     uint8_t tma  = 0;
     uint8_t tac  = 0;
 
-    // Pour détecter le front descendant
-    bool prev_timer_bit = false;
-
     // Overflow delay (hardware exact)
     bool tima_overflow = false;
     uint8_t overflow_delay = 0;

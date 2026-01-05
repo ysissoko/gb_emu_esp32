@@ -135,13 +135,11 @@ namespace cpu
         uint8_t ie = mmu.read(memory::IE_REGISTER);
         // interrupt flag read
         uint8_t if_ = mmu.read(memory::IF_REGISTER);
-        // if an interrupt is requested
-        auto requested = if_;
         // pending interrupts calculated from enabled interrupts and currently requested interrupts
         uint8_t pending = ie & if_;
 
-        // Wake CPU from HALT if any interrupt is pending (rare)
-        if (UNLIKELY(requested != 0))
+        // Wake CPU from HALT if any interrupt is pending (IE & IF != 0)
+        if (UNLIKELY(pending != 0))
         {
             cpu_stopped = false;
         }
@@ -416,8 +414,7 @@ namespace cpu
 
             setZFlag(a == 0);
             setHFlag(false);
-            if (set_carry)
-                setCFlag(true);
+            setCFlag(set_carry);  // TOUJOURS set/clear le carry flag selon set_carry
         }
             return 4;
 
