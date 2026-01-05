@@ -43,7 +43,7 @@ namespace display::menu {
 
             static constexpr int MENU_WIDTH = 240;
             static constexpr int MENU_HEIGHT = 320;
-            static constexpr int FB_CHUNK_HEIGHT = 80;  // Framebuffer par morceaux
-            uint16_t* framebuffer{nullptr};  // Allocated dynamically (240x80 instead of 240x320)
+            static constexpr int FB_CHUNK_HEIGHT = 320;  // Framebuffer pleine hauteur
+            uint16_t* framebuffer{nullptr};  // Allocated dynamically (240x320 full screen)
     };
 }

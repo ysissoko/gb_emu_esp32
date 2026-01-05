@@ -19,7 +19,7 @@ namespace display::menu
 
         ESP_LOGI(TAG, "Initializing menu...");
 
-        // Allocate smaller framebuffer (only 80 lines instead of 320)
+        // Allocate full screen framebuffer (240x320 pixels for full menu visibility)
         size_t fb_size = MENU_WIDTH * FB_CHUNK_HEIGHT * sizeof(uint16_t);
         ESP_LOGI(TAG, "Allocating framebuffer: %d bytes (%dx%d)", fb_size, MENU_WIDTH, FB_CHUNK_HEIGHT);
         ESP_LOGI(TAG, "Free heap: %lu bytes, Free SPIRAM: %lu bytes",
@@ -151,20 +151,20 @@ namespace display::menu
             return;
         }
 
-        // Clear the framebuffer RGB565 (only the allocated chunk!)
+        // Clear the framebuffer RGB565 (full screen!)
         clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
 
-        // Draw the title (use FB_CHUNK_HEIGHT for bounds checking)
-        draw_text_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                         20, 20, "SELECT ROM", RGB565_WHITE);
+        // Draw the title with BIG 16x16 font
+        draw_text_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
+                               30, 30, "SELECT ROM", RGB565_WHITE);
 
-        // Calculate visible area (limited by framebuffer height)
-        // FB_CHUNK_HEIGHT = 80, title at y=20 (takes 8 pixels)
-        // Available space: 80 - 28 = 52 pixels
-        // With ITEM_HEIGHT=10: 52/10 = 5 items maximum
-        constexpr uint8_t MAX_VISIBLE_ITEMS = 5;  // Reduced from 30 to fit in 80 lines
-        constexpr uint8_t ITEM_HEIGHT = 10;
-        constexpr uint8_t START_Y = 30;  // Start at y=30 (after title at y=20+8=28)
+        // Calculate visible area (full 320 pixel height)
+        // FB_CHUNK_HEIGHT = 320, title at y=30 (takes 16 pixels)
+        // Available space: 320 - 70 = 250 pixels
+        // With ITEM_HEIGHT=24: 250/24 = ~10 items visible
+        constexpr uint8_t MAX_VISIBLE_ITEMS = 10;  // Much more visible now!
+        constexpr uint8_t ITEM_HEIGHT = 24;  // Taller for 16x16 font + spacing
+        constexpr uint8_t START_Y = 70;  // Start at y=70 (after title at y=30+16=46 + margin)
 
         int scroll_offset = 0;
         if (rom_count > MAX_VISIBLE_ITEMS)
@@ -189,43 +189,45 @@ namespace display::menu
             bool is_selected = (rom_idx == selected_rom_idx);
             uint16_t text_color = is_selected ? RGB565_YELLOW : RGB565_WHITE;
 
-            // Cursor for selected item
+            // Cursor for selected item (16x16 font for bigger cursor)
             if (is_selected)
             {
-                draw_char_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                                 10, y_pos, '>', RGB565_YELLOW);
+                draw_char_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
+                                       10, y_pos, '>', RGB565_YELLOW);
             }
-            // ROM name (truncate if too long)
+            // ROM name with 8x8 font (more characters fit, better for filenames)
             std::string rom_name = roms_names_list[rom_idx];
-            int max_chars = (MENU_WIDTH - 20) / 8; // 8 pixels per character, 20px margin
+            int max_chars = (MENU_WIDTH - 40) / 8; // 8 pixels per character, 40px margin for cursor
             if (max_chars < 10) max_chars = 10; // Absolute minimum
 
             if (rom_name.length() > max_chars && rom_name.length() > 8)
             {
                 rom_name = rom_name.substr(0, max_chars - 3) + "...";
             }
+            // Draw at y_pos + 4 to vertically center 8px text in 24px height
             draw_text_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                             20, y_pos, rom_name, text_color);
+                             35, y_pos + 4, rom_name, text_color);
         }
 
-        // Scroll indicators
+        // Scroll indicators (16x16 font for big arrows)
         if (rom_count > MAX_VISIBLE_ITEMS)
         {
             if (scroll_offset > 0)
             {
-                draw_char_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                                 MENU_WIDTH / 2 - 4, 30, '^', RGB565_LIGHT_GRAY);
+                // Up arrow at top
+                draw_char_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
+                                       MENU_WIDTH / 2 - 8, 50, '^', RGB565_CYAN);
             }
             if (scroll_offset + MAX_VISIBLE_ITEMS < rom_count)
             {
-                draw_char_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                                 MENU_WIDTH / 2 - 4, FB_CHUNK_HEIGHT - 10, 'v', RGB565_LIGHT_GRAY);
+                // Down arrow at bottom
+                draw_char_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
+                                       MENU_WIDTH / 2 - 8, FB_CHUNK_HEIGHT - 25, 'v', RGB565_CYAN);
             }
         }
 
-        // Display the framebuffer RGB565 (80 lines at top of screen)
-        // This will display the menu in the top 80 pixels of the 320-pixel screen
-        // The bottom 240 pixels will remain black (previous content)
+        // Display the framebuffer RGB565 (FULL SCREEN 320 pixels!)
+        // Menu now uses the entire screen height for better visibility
         display.renderFrameRGB565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT, 0, 0);
 
         // Mark as drawn
