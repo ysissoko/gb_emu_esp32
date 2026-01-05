@@ -44,6 +44,20 @@ namespace emulator
         // Clear the menu display before loading ROM
         ESP_LOGI(TAG, "Clearing menu display...");
 
+        // Clear entire screen to black (240x320) for game display
+        static uint16_t black_buffer[display::SCREEN_WIDTH * 40]; // 40 lines at a time
+        for (int i = 0; i < display::SCREEN_WIDTH * 40; i++) {
+            black_buffer[i] = 0x0000; // Black
+        }
+
+        // Fill screen in chunks
+        for (int y = 0; y < display::SCREEN_HEIGHT; y += 40) {
+            int chunk_height = (y + 40 > display::SCREEN_HEIGHT) ? (display::SCREEN_HEIGHT - y) : 40;
+            lcd_display->renderFrameRGB565(black_buffer, display::SCREEN_WIDTH, chunk_height, 0, y);
+        }
+
+        ESP_LOGI(TAG, "Screen cleared to black");
+
         std::string selected_rom = menu.getSelectedRomPath();
         ESP_LOGI(TAG, "ROM selected: %s", selected_rom.c_str());
         ESP_LOGI(TAG, "Menu will be destroyed, freeing ~150KB");
