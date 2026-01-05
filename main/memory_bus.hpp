@@ -8,6 +8,9 @@
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "save_manager.hpp"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 namespace controller {
     class Joypad;
@@ -85,6 +88,12 @@ namespace memory
         esp_err_t loadSRAM();
         esp_err_t saveSRAM();
         void markSRAMDirty();  // Call when SRAM is written, triggers auto-save
+        bool isSRAMDirty() const { return sram_dirty_counter > 0; }  // Check if SRAM needs saving
+
+        // Async save system (safe for SPI operations)
+        void initSaveTask();         // Initialize save task on Core 0
+        void requestSave();          // Request async save (thread-safe)
+        void shutdownSaveTask();     // Cleanup save task
 
         // RTC update (call periodically, e.g., every frame)
         void updateRTC();
@@ -157,6 +166,12 @@ namespace memory
         bool has_battery{false};
         std::string rom_path{};
         uint32_t sram_dirty_counter{0};  // Auto-save every N frames
+
+        // Async save task (Core 0)
+        static void save_task(void* arg);
+        TaskHandle_t save_task_handle{nullptr};
+        QueueHandle_t save_queue{nullptr};
+        volatile bool save_task_running{false};
 
         // Work RAM - 8KB (0xC000-0xDFFF)
         std::array<uint8_t, 0x2000> wram;

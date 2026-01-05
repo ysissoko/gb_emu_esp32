@@ -629,4 +629,120 @@ namespace memory
             rtc_days_high = (rtc_days_high & 0xFE) | ((days >> 8) & 0x01);
         }
     }
+
+    // Async save task - runs on Core 0 to avoid SPI conflicts
+    void MemoryBus::save_task(void* arg)
+    {
+        MemoryBus* mmu = static_cast<MemoryBus*>(arg);
+        ESP_LOGI("SaveTask", "Save task started on core %d", xPortGetCoreID());
+
+        uint8_t dummy;
+        while (mmu->save_task_running)
+        {
+            // Wait for save request (blocking with timeout)
+            if (xQueueReceive(mmu->save_queue, &dummy, pdMS_TO_TICKS(1000)) == pdTRUE)
+            {
+                // Save requested
+                ESP_LOGI("SaveTask", "Save requested, saving SRAM...");
+                esp_err_t ret = mmu->saveSRAM();
+                if (ret == ESP_OK)
+                {
+                    ESP_LOGI("SaveTask", "SRAM saved successfully");
+                    mmu->sram_dirty_counter = 0;  // Reset dirty counter
+                }
+                else
+                {
+                    ESP_LOGE("SaveTask", "Failed to save SRAM: %s", esp_err_to_name(ret));
+                }
+            }
+        }
+
+        ESP_LOGI("SaveTask", "Save task shutting down");
+        vTaskDelete(nullptr);
+    }
+
+    void MemoryBus::initSaveTask()
+    {
+        if (!has_battery || rom_path.empty())
+        {
+            ESP_LOGI("MemoryBus", "No battery or ROM path, skipping save task");
+            return;
+        }
+
+        // Create queue for save requests
+        save_queue = xQueueCreate(2, sizeof(uint8_t));
+        if (!save_queue)
+        {
+            ESP_LOGE("MemoryBus", "Failed to create save queue");
+            return;
+        }
+
+        // Start save task on Core 0 (to avoid conflicts with emulation on Core 1)
+        save_task_running = true;
+        BaseType_t ret = xTaskCreatePinnedToCore(
+            save_task,
+            "save_task",
+            4096,           // Stack size
+            this,           // Parameter (this pointer)
+            2,              // Priority (lower than emulation)
+            &save_task_handle,
+            0               // Core 0
+        );
+
+        if (ret != pdPASS)
+        {
+            ESP_LOGE("MemoryBus", "Failed to create save task");
+            vQueueDelete(save_queue);
+            save_queue = nullptr;
+            save_task_running = false;
+        }
+        else
+        {
+            ESP_LOGI("MemoryBus", "Save task initialized on Core 0");
+        }
+    }
+
+    void MemoryBus::requestSave()
+    {
+        if (!save_queue || !has_battery)
+            return;
+
+        uint8_t dummy = 1;
+        // Non-blocking send (if queue full, skip this request)
+        xQueueSend(save_queue, &dummy, 0);
+    }
+
+    void MemoryBus::shutdownSaveTask()
+    {
+        if (!save_task_handle)
+            return;
+
+        ESP_LOGI("MemoryBus", "Shutting down save task...");
+
+        // Request final save if dirty
+        if (sram_dirty_counter > 0)
+        {
+            requestSave();
+            vTaskDelay(pdMS_TO_TICKS(100));  // Wait for save to complete
+        }
+
+        // Stop task
+        save_task_running = false;
+
+        // Wait for task to finish
+        if (save_task_handle)
+        {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            save_task_handle = nullptr;
+        }
+
+        // Clean up queue
+        if (save_queue)
+        {
+            vQueueDelete(save_queue);
+            save_queue = nullptr;
+        }
+
+        ESP_LOGI("MemoryBus", "Save task shut down");
+    }
 }

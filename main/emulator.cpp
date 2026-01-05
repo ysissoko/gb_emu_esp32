@@ -115,6 +115,15 @@ namespace emulator
         int rendered_frames = 0;
         int skipped_frames = 0;
 
+        // Save system: auto-save every 30 seconds if dirty
+        int64_t last_autosave_time = esp_timer_get_time();
+        constexpr int64_t AUTOSAVE_INTERVAL_US = 30 * 1000000;  // 30 seconds
+
+        // Manual save: SELECT+START held for 2 seconds
+        int select_start_hold_frames = 0;
+        constexpr int SAVE_HOLD_FRAMES = 120;  // ~2 seconds at 60 FPS
+        bool save_triggered = false;
+
         while (true)
         {
             int64_t frame_start = esp_timer_get_time();
@@ -131,6 +140,40 @@ namespace emulator
 
             // Update RTC (Real-Time Clock for MBC3)
             emulator->mmu->updateRTC();
+
+            // Manual save trigger: SELECT + START held for 2 seconds
+            bool select_pressed = emulator->joypad->buttonSelectPressed();
+            bool start_pressed = emulator->joypad->buttonStartPressed();
+
+            if (select_pressed && start_pressed)
+            {
+                select_start_hold_frames++;
+                if (select_start_hold_frames == SAVE_HOLD_FRAMES && !save_triggered)
+                {
+                    // Trigger manual save
+                    ESP_LOGI(TAG, "Manual save triggered (SELECT+START held)");
+                    emulator->mmu->requestSave();
+                    save_triggered = true;
+                }
+            }
+            else
+            {
+                select_start_hold_frames = 0;
+                save_triggered = false;
+            }
+
+            // Auto-save every 30 seconds if SRAM is dirty
+            int64_t current_time = esp_timer_get_time();
+            if (current_time - last_autosave_time >= AUTOSAVE_INTERVAL_US)
+            {
+                last_autosave_time = current_time;
+                // Only save if SRAM was modified
+                if (emulator->mmu->isSRAMDirty())
+                {
+                    ESP_LOGI(TAG, "Auto-save triggered (30s interval)");
+                    emulator->mmu->requestSave();
+                }
+            }
 
             int64_t frame_end = esp_timer_get_time();
 
@@ -329,6 +372,9 @@ namespace emulator
         {
             ESP_LOGI(TAG, "SRAM loaded from save file");
         }
+
+        // Initialize async save task (Core 0) for safe saving
+        mmu->initSaveTask();
 
         // Free the ROM buffer after loading (MMU should have copied it)
         free(rom_buffer);
