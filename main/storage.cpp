@@ -172,8 +172,7 @@ namespace storage
             .format_if_mount_failed = false,
             .max_files = 5,
             .allocation_unit_size = 16 * 1024,
-            .disk_status_check_enable = false,
-            .use_one_fat = false
+            .disk_status_check_enable = false
         };
 
         sdmmc_card_t *card;
@@ -195,7 +194,7 @@ namespace storage
             return ret;
         }
 
-        ESP_LOGI(TAG, "SD card mounted at %s", MOUNT_PATH);
+        ESP_LOGI(TAG, "SD card mounted at %s", MOUNT_PATH.c_str());
         return ESP_OK;
     }
 

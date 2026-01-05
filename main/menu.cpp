@@ -22,7 +22,7 @@ namespace display::menu
         // Allocate full screen framebuffer (240x320 pixels for full menu visibility)
         size_t fb_size = MENU_WIDTH * FB_CHUNK_HEIGHT * sizeof(uint16_t);
         ESP_LOGI(TAG, "Allocating framebuffer: %d bytes (%dx%d)", fb_size, MENU_WIDTH, FB_CHUNK_HEIGHT);
-        ESP_LOGI(TAG, "Free heap: %lu bytes, Free SPIRAM: %lu bytes",
+        ESP_LOGI(TAG, "Free heap: %u bytes, Free SPIRAM: %u bytes",
                  heap_caps_get_free_size(MALLOC_CAP_8BIT),
                  heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
@@ -38,7 +38,7 @@ namespace display::menu
         if (!framebuffer)
         {
             ESP_LOGE(TAG, "Failed to allocate framebuffer! Need %d bytes", fb_size);
-            ESP_LOGE(TAG, "Available: Internal=%lu, SPIRAM=%lu",
+            ESP_LOGE(TAG, "Available: Internal=%u, SPIRAM=%u",
                      heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
             return;
@@ -97,7 +97,6 @@ namespace display::menu
         static bool prev_down = false;
         static bool prev_a = false;
         static bool prev_start = false;
-        static int log_counter = 0;
 
         bool up_pressed = joypad->buttonUpPressed();
         bool down_pressed = joypad->buttonDownPressed();
