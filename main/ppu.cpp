@@ -514,7 +514,11 @@ namespace ppu
             {
                 // La framebuffer est en RAM interne, mais le LCD DMA ne lit pas la PSRAM;
                 // votre LCDDisplay fait déjà le chunk/copie DMA interne si besoin.
-                ppu->display->renderFrameRGB565(frame, display::LCD_WIDTH, display::LCD_HEIGHT);
+
+                // Center Game Boy display (160x144) on LCD screen (240x320)
+                constexpr int offset_x = (display::SCREEN_WIDTH - display::LCD_WIDTH) >> 2;   // (240-160)/2 = 40
+                constexpr int offset_y = (display::SCREEN_HEIGHT - display::LCD_HEIGHT) >> 2; // (320-144)/2 = 88
+                ppu->display->renderFrameRGB565(frame, display::LCD_WIDTH, display::LCD_HEIGHT, offset_x, offset_y);
             }
         }
     }
