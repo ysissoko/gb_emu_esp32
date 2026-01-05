@@ -103,13 +103,22 @@ namespace display::menu
         bool a_pressed = joypad->buttonAPressed();
         bool start_pressed = joypad->buttonStartPressed();
 
+        constexpr uint8_t MAX_VISIBLE_ITEMS = 10;
+
         // Detect rising edge (button just pressed, not held)
         if (up_pressed && !prev_up)
         {
             if (selected_rom_idx > 0)
             {
                 selected_rom_idx--;
-                ESP_LOGI(TAG, "Selected: %d", selected_rom_idx);
+
+                // Adjust scroll if selected item goes above visible area
+                if (selected_rom_idx < scroll_offset)
+                {
+                    scroll_offset = selected_rom_idx;
+                }
+
+                ESP_LOGI(TAG, "Selected: %d, Scroll: %d", selected_rom_idx, scroll_offset);
                 needs_redraw = true;
             }
         }
@@ -118,7 +127,14 @@ namespace display::menu
             if (selected_rom_idx < rom_count - 1)
             {
                 selected_rom_idx++;
-                ESP_LOGI(TAG, "Selected: %d", selected_rom_idx);
+
+                // Adjust scroll if selected item goes below visible area
+                if (selected_rom_idx >= scroll_offset + MAX_VISIBLE_ITEMS)
+                {
+                    scroll_offset = selected_rom_idx - MAX_VISIBLE_ITEMS + 1;
+                }
+
+                ESP_LOGI(TAG, "Selected: %d, Scroll: %d", selected_rom_idx, scroll_offset);
                 needs_redraw = true;
             }
         }
@@ -153,29 +169,15 @@ namespace display::menu
         // Clear the framebuffer RGB565 (full screen!)
         clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
 
-        // Draw the title with BIG 16x16 font
-        draw_text_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                               30, 30, "SELECT ROM", RGB565_WHITE);
+        constexpr uint8_t MAX_VISIBLE_ITEMS = 10;
+        constexpr uint8_t ITEM_HEIGHT = 24;
+        constexpr uint8_t START_Y = 70;
 
-        // Calculate visible area (full 320 pixel height)
-        // FB_CHUNK_HEIGHT = 320, title at y=30 (takes 16 pixels)
-        // Available space: 320 - 70 = 250 pixels
-        // With ITEM_HEIGHT=24: 250/24 = ~10 items visible
-        constexpr uint8_t MAX_VISIBLE_ITEMS = 10;  // Much more visible now!
-        constexpr uint8_t ITEM_HEIGHT = 24;  // Taller for 16x16 font + spacing
-        constexpr uint8_t START_Y = 70;  // Start at y=70 (after title at y=30+16=46 + margin)
-
-        int scroll_offset = 0;
-        if (rom_count > MAX_VISIBLE_ITEMS)
+        // Clamp scroll_offset to valid range (safety check)
+        if (scroll_offset < 0) scroll_offset = 0;
+        if (rom_count > MAX_VISIBLE_ITEMS && scroll_offset > rom_count - MAX_VISIBLE_ITEMS)
         {
-            if (selected_rom_idx >= (MAX_VISIBLE_ITEMS >> 1))
-            {
-                scroll_offset = selected_rom_idx - (MAX_VISIBLE_ITEMS >> 1);
-                if (scroll_offset + MAX_VISIBLE_ITEMS > rom_count)
-                {
-                    scroll_offset = rom_count - MAX_VISIBLE_ITEMS;
-                }
-            }
+            scroll_offset = rom_count - MAX_VISIBLE_ITEMS;
         }
 
         // Dessiner la liste des ROMs
@@ -196,7 +198,7 @@ namespace display::menu
             }
             // ROM name with 8x8 font (more characters fit, better for filenames)
             std::string rom_name = roms_names_list[rom_idx];
-            int max_chars = (MENU_WIDTH - 40) / 8; // 8 pixels per character, 40px margin for cursor
+            int max_chars = (MENU_WIDTH - 40) >> 3; // 8 pixels per character, 40px margin for cursor
             if (max_chars < 10) max_chars = 10; // Absolute minimum
 
             if (rom_name.length() > max_chars && rom_name.length() > 8)
@@ -215,18 +217,16 @@ namespace display::menu
             {
                 // Up arrow at top
                 draw_char_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                                       MENU_WIDTH / 2 - 8, 50, '^', RGB565_CYAN);
+                                       (MENU_WIDTH >> 1) - 8, 50, '^', RGB565_CYAN);
             }
             if (scroll_offset + MAX_VISIBLE_ITEMS < rom_count)
             {
                 // Down arrow at bottom
                 draw_char_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                                       MENU_WIDTH / 2 - 8, FB_CHUNK_HEIGHT - 25, 'v', RGB565_CYAN);
+                                       (MENU_WIDTH >> 1) - 8, FB_CHUNK_HEIGHT - 25, 'v', RGB565_CYAN);
             }
         }
 
-        // Display the framebuffer RGB565 (FULL SCREEN 320 pixels!)
-        // Menu now uses the entire screen height for better visibility
         display.renderFrameRGB565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT, 0, 0);
 
         // Mark as drawn

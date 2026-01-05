@@ -23,7 +23,7 @@ namespace display
     constexpr int SPI_CLK_FREQ_MHZ = 80; // clock in mhz
 
     static constexpr int CHUNK_LINES = 8;
-    static constexpr int CHUNK_PIXELS = LCD_WIDTH * CHUNK_LINES;
+    static constexpr int CHUNK_PIXELS = SCREEN_WIDTH * CHUNK_LINES;  // Use SCREEN_WIDTH (240) instead of LCD_WIDTH (160)
 
     // Pixel color (Game Boy has 4 shades of gray)
     enum class Color : uint8_t

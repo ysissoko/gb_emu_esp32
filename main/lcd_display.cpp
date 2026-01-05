@@ -116,9 +116,9 @@ namespace display
         esp_lcd_panel_set_gap(panel, 0, 0); // No offset for standard 240x240
 
         ESP_LOGI("LCD", "Setting display orientation...");
-        // Try different orientation - no swap, just mirror
-        esp_lcd_panel_swap_xy(panel, false);      // No rotation
-        esp_lcd_panel_mirror(panel, true, false); // No mirror
+        // Portrait mode - no swap, no mirror
+        esp_lcd_panel_swap_xy(panel, false);      // No XY swap (portrait mode)
+        esp_lcd_panel_mirror(panel, false, false); // No mirroring
 
         ESP_LOGI("LCD", "Activating color inversion (matching example code)...");
         // Example code calls 0x21 (INVON) twice (lines 87 and 164)
@@ -129,15 +129,17 @@ namespace display
         // Some modules use BGR instead of RGB
         // This command sets the color order (command 0x36 - MADCTL)
         // Bit 3 controls RGB/BGR: 0 = RGB, 1 = BGR
-        ESP_LOGI("LCD", "Configuring MADCTL for ST7789V (matching example code)...");
-        // ST7789V Seengreat configuration from example code (lcd_2inch.cpp line 82)
-        // 0xA0 = 10100000 binary:
-        //   Bit 7 (MY=1): Row address order
-        //   Bit 5 (MV=1): Row/Column exchange
+        ESP_LOGI("LCD", "Configuring MADCTL for ST7789V (portrait mode without rotation)...");
+        // ST7789V MADCTL configuration for portrait mode (240x320) without rotation
+        // 0x00 = 00000000 binary:
+        //   Bit 7 (MY=0): Normal row address order
+        //   Bit 6 (MX=0): Normal column address order
+        //   Bit 5 (MV=0): No Row/Column exchange (portrait mode)
         //   Bit 3 (BGR=0): RGB color order (with inversion below, becomes BGR effectively)
-        uint8_t madctl_value = 0xA0;                                  // Match example exactly
+        // Result: Normal portrait orientation
+        uint8_t madctl_value = 0x00;                                  // Portrait mode without rotation
         esp_lcd_panel_io_tx_param(io_handle, 0x36, &madctl_value, 1); // MADCTL command
-        ESP_LOGI("LCD", "MADCTL configured to 0xA0 (RGB + rotation)");
+        ESP_LOGI("LCD", "MADCTL configured to 0x00 (portrait mode without rotation)");
 
         ESP_LOGI("LCD", "Clearing screen to eliminate snow...");
         // Create a black buffer and fill entire screen

@@ -219,7 +219,8 @@ inline void draw_char_16x16_rgb565(uint16_t* framebuffer, int fb_width, int fb_h
     for (int row = 0; row < 16; row++) {
         uint16_t line = glyph[row];
         for (int col = 0; col < 16; col++) {
-            if (line & (1 << (15 - col))) {
+            // Inverted bit order to fix horizontal mirroring (was 15-col, now col)
+            if (line & (1 << col)) {
                 int px = x + col;
                 int py = y + row;
                 if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {
@@ -251,7 +252,8 @@ inline void draw_char_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
 
     for (int row = 0; row < 8; row++) {
         for (int col = 0; col < 8; col++) {
-            if (glyph[row] & (1 << (7 - col))) {
+            // Inverted bit order to fix horizontal mirroring (was 7-col, now col)
+            if (glyph[row] & (1 << col)) {
                 int px = x + col;
                 int py = y + row;
                 if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {

@@ -29,7 +29,7 @@ namespace cpu
         ~CPU();
         IRAM_ATTR uint8_t execute(uint8_t) __attribute__((hot));
         IRAM_ATTR uint8_t execute_extended(uint8_t) __attribute__((hot));
-        IRAM_ATTR uint16_t step() __attribute__((hot));  // uint16_t for HALT optimization (up to 456 cycles)
+        IRAM_ATTR uint8_t step() __attribute__((hot));
         void run_frame();
     private:
         uint8_t a{0};
@@ -60,9 +60,6 @@ namespace cpu
         IRAM_ATTR inline bool readCFlag() const { return (f & C_FLAG_MASK) != 0; };
 
         bool test_interrupts_flags();
-
-        // HALT optimization: calculate cycles until next interrupt
-        uint16_t calculate_halt_cycles();
 
         IRAM_ATTR inline void setZFlag(bool value) {
             if (value) {

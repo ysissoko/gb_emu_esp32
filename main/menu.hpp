@@ -37,6 +37,7 @@ namespace display::menu {
             int rom_count{0};
             int selected_rom_idx{0};
             int prev_selected_rom_idx{-1};
+            int scroll_offset{0};  // Track scroll position
             bool rom_selected{false};
             bool initialized{false};
             bool needs_redraw{true};
