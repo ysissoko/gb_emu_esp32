@@ -114,12 +114,20 @@ namespace ppu
         // Allocated in INTERNAL RAM for fast access (DMA-compatible)
         uint16_t* framebuffer{nullptr};
         
-        // Optimized palette lookup table (BGR565 for ST7789V)
+        // Helper to convert RGB565 to BGR565 for ST7789V
+        static constexpr uint16_t rgb_to_bgr565(uint16_t rgb) {
+            uint16_t r = (rgb >> 11) & 0x1F;  // Extract 5 red bits
+            uint16_t g = (rgb >> 5) & 0x3F;   // Extract 6 green bits
+            uint16_t b = rgb & 0x1F;          // Extract 5 blue bits
+            return (b << 11) | (g << 5) | r;  // Reassemble as BGR
+        }
+
+        // Optimized palette lookup table (converted RGB565 to BGR565 for ST7789V)
         static constexpr uint16_t GB_PALETTE_BGR565[4] = {
-            0xFFFF, // WHITE
-            0xC618, // LIGHT_GRAY
-            0x632C, // DARK_GRAY
-            0x0000  // BLACK
+            rgb_to_bgr565(0xFFFF), // WHITE
+            rgb_to_bgr565(0xC618), // LIGHT_GRAY
+            rgb_to_bgr565(0x632C), // DARK_GRAY
+            rgb_to_bgr565(0x0000)  // BLACK
         };
 
         // PPU state

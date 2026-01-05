@@ -140,7 +140,7 @@ inline void draw_char_rgb565(uint16_t* framebuffer, int fb_width, int fb_height,
                 int px = x + col;
                 int py = y + row;
                 if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {
-                    framebuffer[py * fb_width + px] = swap16(color);
+                    framebuffer[py * fb_width + px] = color;  // Pas de swap16, déjà en BGR
                 }
             }
         }

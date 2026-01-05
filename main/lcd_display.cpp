@@ -119,19 +119,24 @@ namespace display
         esp_lcd_panel_swap_xy(panel, false);      // No rotation
         esp_lcd_panel_mirror(panel, true, false); // No mirror
 
-        ESP_LOGI("LCD", "Testing color inversion - trying WITHOUT inversion first...");
-        esp_lcd_panel_invert_color(panel, false); // Try without inversion first
+        ESP_LOGI("LCD", "Activating color inversion (matching example code)...");
+        // Example code calls 0x21 (INVON) twice (lines 87 and 164)
+        // This inverts display colors - RGB becomes BGR effectively
+        esp_lcd_panel_invert_color(panel, true); // Enable inversion like example
 
         // For ST7789V, we might need to configure RGB/BGR order
         // Some modules use BGR instead of RGB
         // This command sets the color order (command 0x36 - MADCTL)
         // Bit 3 controls RGB/BGR: 0 = RGB, 1 = BGR
-        ESP_LOGI("LCD", "Configuring color order for ST7789V...");
-        // ST7789V Seengreat uses BGR order, configure MADCTL register
-        // We need to set bit 3 (BGR bit) in MADCTL
-        uint8_t madctl_value = 0x08;                                  // Bit 3 = BGR color order
+        ESP_LOGI("LCD", "Configuring MADCTL for ST7789V (matching example code)...");
+        // ST7789V Seengreat configuration from example code (lcd_2inch.cpp line 82)
+        // 0xA0 = 10100000 binary:
+        //   Bit 7 (MY=1): Row address order
+        //   Bit 5 (MV=1): Row/Column exchange
+        //   Bit 3 (BGR=0): RGB color order (with inversion below, becomes BGR effectively)
+        uint8_t madctl_value = 0xA0;                                  // Match example exactly
         esp_lcd_panel_io_tx_param(io_handle, 0x36, &madctl_value, 1); // MADCTL command
-        ESP_LOGI("LCD", "Color order set to BGR");
+        ESP_LOGI("LCD", "MADCTL configured to 0xA0 (RGB + rotation)");
 
         ESP_LOGI("LCD", "Clearing screen to eliminate snow...");
         // Create a black buffer and fill entire screen
