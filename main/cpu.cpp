@@ -110,7 +110,7 @@ namespace cpu
             {
                 ime_enabled = false;
                 // Set the flag to false
-                mmu.write(memory::IF_REGISTER, if_ & ~(1 << bit_idx));
+                mmu.write(memory::IF_REGISTER, (if_ & ~(1 << bit_idx)) | 0xE0);
                 // push PC on stack
                 sp--;
                 mmu.write(sp, (pc >> 8) & 0xFF); // MSB
@@ -172,6 +172,19 @@ namespace cpu
         else
         {
             opcode = mmu.read(pc++);
+        }
+
+        static uint32_t same_pc_counter = 0;
+        static uint16_t last_pc = 0;
+        
+        if (pc == last_pc) {
+            if (++same_pc_counter > 100000) {
+                ESP_LOGI("CPU blocked at", "opcode: %x, pc: %d", opcode, pc);
+                while (true) vTaskDelay(1000); // stop
+            }
+        } else {
+            same_pc_counter = 0;
+            last_pc = pc;
         }
 
         return execute(opcode);

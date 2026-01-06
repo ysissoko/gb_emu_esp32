@@ -22,7 +22,6 @@ namespace emulator
         menu.init();
 
         ESP_LOGI(TAG, "Starting menu loop...");
-        int loop_count = 0;
 
         // Run menu loop until ROM selected
         while (!menu.isRomSelected())
@@ -30,16 +29,8 @@ namespace emulator
             menu.update();
             menu.draw();
 
-            loop_count++;
-            if (loop_count % 20 == 0)
-            { // Log every second (20 * 50ms = 1s)
-                ESP_LOGI(TAG, "Menu loop iteration %d, rom_selected=%d", loop_count, menu.isRomSelected());
-            }
-
             vTaskDelay(pdMS_TO_TICKS(MENU_FRAME_MS));
         }
-
-        ESP_LOGI(TAG, "ROM selected! Exited menu loop after %d iterations", loop_count);
 
         // Clear the menu display before loading ROM
         ESP_LOGI(TAG, "Clearing menu display...");

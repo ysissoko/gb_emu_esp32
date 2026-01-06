@@ -518,8 +518,6 @@ namespace ppu
         ESP_LOGI("PPU", "Render task started on core %d", xPortGetCoreID());
 
         uint16_t *frame = nullptr;
-        int frame_count = 0;
-
         while (true)
         {
             if (xQueueReceive(frame_queue, &frame, portMAX_DELAY) == pdTRUE)
