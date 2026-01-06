@@ -75,10 +75,14 @@ namespace ppu
             mode = Mode::HBLANK;
             mode_cycles = 0;
             updateLY(0);
+            // Check STAT interrupt after state changes
+            checkSTATInterrupt();
             return;
         }
 
         mode_cycles += cycles;
+
+        bool state_changed = false;
 
         switch (mode)
         {
@@ -88,6 +92,7 @@ namespace ppu
                 mode_cycles -= OAM_SCAN_CYCLES;
                 scanOAM();
                 setMode(Mode::DRAWING);
+                state_changed = true;
             }
             break;
 
@@ -97,6 +102,7 @@ namespace ppu
                 mode_cycles -= DRAWING_CYCLES;
                 renderScanline();
                 setMode(Mode::HBLANK);
+                state_changed = true;
             }
             break;
 
@@ -119,6 +125,7 @@ namespace ppu
                 {
                     setMode(Mode::OAM_SCAN);
                 }
+                state_changed = true;
             }
             break;
 
@@ -133,8 +140,16 @@ namespace ppu
                     updateLY(0);
                     setMode(Mode::OAM_SCAN);
                 }
+                state_changed = true;
             }
             break;
+        }
+
+        // CRITICAL FIX: Check STAT interrupt ONCE after all state changes
+        // This prevents interrupt storms from double-calling checkSTATInterrupt()
+        if (state_changed)
+        {
+            checkSTATInterrupt();
         }
     }
 
@@ -185,8 +200,8 @@ namespace ppu
         stat = (stat & 0xFC) | static_cast<uint8_t>(new_mode);
         mmu.write(0xFF41, stat);
 
-        // Check if this should trigger a STAT interrupt
-        checkSTATInterrupt();
+        // NOTE: Do NOT call checkSTATInterrupt() here!
+        // It will be called once after all state changes in step()
     }
 
     void PPU::updateLY(uint8_t new_ly)
@@ -206,8 +221,8 @@ namespace ppu
 
         mmu.write(0xFF41, stat);
 
-        // Check if this should trigger a STAT interrupt
-        checkSTATInterrupt();
+        // NOTE: Do NOT call checkSTATInterrupt() here!
+        // It will be called once after all state changes in step()
     }
 
     void PPU::renderScanline()
@@ -314,6 +329,10 @@ namespace ppu
         if (UNLIKELY((ctx.lcdc & LCDC_WINDOW_ENABLE) == 0))
             return;
 
+        // Window is visible if WY <= LY AND WX <= 166
+        // WX=0-6 is off-screen (WX-7 < 0), WX=7 starts at screen pixel 0
+        // WX=166 is the last valid position (166-7=159, the last screen pixel)
+        // WX >= 167 means window is completely off-screen
         if (UNLIKELY(ctx.wy > ly || ctx.wx >= 167))
             return;
 
