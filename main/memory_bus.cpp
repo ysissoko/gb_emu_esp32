@@ -1,4 +1,5 @@
 #include "memory_bus.hpp"
+#include "cpu.hpp"  // For DMA control
 #include "joypad.hpp"
 #include "timer.hpp"
 #include "serial.hpp"
@@ -134,17 +135,21 @@ namespace memory
                 }
                 else if (mbc_type == 3 && ram_bank >= 0x08 && ram_bank <= 0x0C) {
                     // MBC3 RTC registers (0x08-0x0C)
-                    if (rtc_latched) {
-                        // Return latched values
-                        switch (ram_bank) {
-                            case 0x08: return rtc_seconds;
-                            case 0x09: return rtc_minutes;
-                            case 0x0A: return rtc_hours;
-                            case 0x0B: return rtc_days_low;
-                            case 0x0C: return rtc_days_high;
-                        }
+                    // Some games (like Pokémon) read RTC without latching first
+                    // Always update to current time before reading if not latched
+                    if (!rtc_latched) {
+                        const_cast<MemoryBus*>(this)->updateRTC();
                     }
-                    return 0xFF;
+
+                    // Return current RTC values (latched or live)
+                    switch (ram_bank) {
+                        case 0x08: return rtc_seconds;
+                        case 0x09: return rtc_minutes;
+                        case 0x0A: return rtc_hours;
+                        case 0x0B: return rtc_days_low;
+                        case 0x0C: return rtc_days_high;
+                        default: return 0xFF;
+                    }
                 }
                 else {
                     // Normal RAM (MBC1/3/5) with banking
@@ -389,11 +394,17 @@ namespace memory
                     else if (address == IF_REGISTER) if_register = value;
                     else if (address == 0xFF46) {
                         // DMA Transfer (0xFF46): Copy 160 bytes from XX00-XX9F to OAM (0xFE00-0xFE9F)
+                        // DMA blocks CPU for 160 M-cycles
                         uint16_t source = value << 8;  // XX00
                         for (uint16_t i = 0; i < 0xA0; i++) {
                             oam[i] = read(source + i);
                         }
                         io_registers[0x46] = value;
+
+                        // Signal CPU to block for DMA duration
+                        if (cpu) {
+                            cpu->startDMA();
+                        }
                     }
                     else if (address >= 0xFF10 && address <= 0xFF3F) {
                         // APU registers (0xFF10-0xFF3F)

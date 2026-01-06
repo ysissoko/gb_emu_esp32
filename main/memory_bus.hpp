@@ -28,6 +28,10 @@ namespace apu {
     class APU;
 }
 
+namespace cpu {
+    class CPU;
+}
+
 namespace memory
 {
     // Game Boy memory map
@@ -83,6 +87,9 @@ namespace memory
 
         // Set ROM path for save management
         void setROMPath(const std::string& path) { rom_path = path; }
+
+        // Set CPU reference for DMA control (called after CPU construction)
+        void setCPU(cpu::CPU* cpu_ptr) { cpu = cpu_ptr; }
 
         // SRAM save/load
         esp_err_t loadSRAM();
@@ -197,6 +204,9 @@ namespace memory
 
         // Physical controller button handling
         std::shared_ptr<controller::Joypad> joypad{nullptr};
+
+        // CPU reference for DMA control (set after construction)
+        cpu::CPU* cpu{nullptr};
 
         // Timer for game timing
         std::unique_ptr<timer::Timer> timer{nullptr};

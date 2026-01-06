@@ -30,6 +30,7 @@ namespace ppu
           frame_ready(false),
           should_render_frame(true),
           window_line_counter(0),
+          prev_stat_line(false),
           visible_sprite_count(0),
           display(std::move(display))
     {
@@ -137,43 +138,55 @@ namespace ppu
         }
     }
 
+    void PPU::checkSTATInterrupt()
+    {
+        // Read STAT register
+        uint8_t stat = mmu.read(0xFF41);
+        uint8_t lyc = mmu.read(0xFF45);
+
+        // Calculate STAT interrupt line state
+        // The line is HIGH if any of these conditions are met:
+        bool stat_line = false;
+
+        // Mode 0 (HBLANK) interrupt enabled (bit 3) AND in HBLANK
+        if ((stat & 0x08) && mode == Mode::HBLANK)
+            stat_line = true;
+
+        // Mode 1 (VBLANK) interrupt enabled (bit 4) AND in VBLANK
+        if ((stat & 0x10) && mode == Mode::VBLANK)
+            stat_line = true;
+
+        // Mode 2 (OAM) interrupt enabled (bit 5) AND in OAM_SCAN
+        if ((stat & 0x20) && mode == Mode::OAM_SCAN)
+            stat_line = true;
+
+        // LYC=LY interrupt enabled (bit 6) AND LY matches LYC
+        if ((stat & 0x40) && (ly == lyc))
+            stat_line = true;
+
+        // Trigger interrupt only on LOW->HIGH transition (edge trigger)
+        if (stat_line && !prev_stat_line)
+        {
+            mmu.request_interrupt(memory::IRQFlag::IRQ_LCD_STAT);
+        }
+
+        prev_stat_line = stat_line;
+    }
+
     void PPU::setMode(Mode new_mode)
     {
         if (mode == new_mode)
             return;
 
-        // Read previous STAT BEFORE modification (important!)
-        uint8_t prev_stat = mmu.read(0xFF41);
-        Mode prev_mode = mode;
-
         mode = new_mode;
 
-        // Update mode bits (0–1)
-        uint8_t stat = (prev_stat & 0xFC) | static_cast<uint8_t>(new_mode);
+        // Update STAT register mode bits (0-1)
+        uint8_t stat = mmu.read(0xFF41);
+        stat = (stat & 0xFC) | static_cast<uint8_t>(new_mode);
         mmu.write(0xFF41, stat);
 
-        bool request_stat_int = false;
-
-        switch (new_mode)
-        {
-            case Mode::HBLANK:
-                // STAT bit 3
-                request_stat_int = (prev_stat & 0x08);
-                break;
-            case Mode::VBLANK:
-                // STAT bit 4
-                request_stat_int = (prev_stat & 0x10);
-                break;
-            case Mode::OAM_SCAN:
-                // STAT bit 5
-                request_stat_int = (prev_stat & 0x20);
-                break;
-            default:
-                break;
-        }
-
-        if (request_stat_int)
-            mmu.request_interrupt(memory::IRQFlag::IRQ_LCD_STAT);
+        // Check if this should trigger a STAT interrupt
+        checkSTATInterrupt();
     }
 
     void PPU::updateLY(uint8_t new_ly)
@@ -181,21 +194,20 @@ namespace ppu
         ly = new_ly;
         mmu.write(0xFF44, ly);
 
+        // Update LYC=LY coincidence flag (bit 2)
         uint8_t lyc = mmu.read(0xFF45);
         uint8_t stat = mmu.read(0xFF41);
 
-        bool prev_match = stat & 0x04;
-
         if (ly == lyc) {
-            stat |= 0x04;
-            if (!prev_match && (stat & 0x40)) {
-                mmu.request_interrupt(memory::IRQFlag::IRQ_LCD_STAT);
-            }
+            stat |= 0x04;  // Set coincidence flag
         } else {
-            stat &= ~0x04;
+            stat &= ~0x04;  // Clear coincidence flag
         }
 
         mmu.write(0xFF41, stat);
+
+        // Check if this should trigger a STAT interrupt
+        checkSTATInterrupt();
     }
 
     void PPU::renderScanline()

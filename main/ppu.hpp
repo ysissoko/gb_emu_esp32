@@ -137,6 +137,7 @@ namespace ppu
         bool frame_ready;
         bool should_render_frame;  // Control frame rendering for skipping
         uint8_t window_line_counter;  // Internal window line counter
+        bool prev_stat_line;  // Previous STAT interrupt line state (for STAT blocking)
 
         // Sprite buffer for current scanline
         std::array<OAMEntry, MAX_SPRITES_PER_LINE> visible_sprites;
@@ -150,6 +151,7 @@ namespace ppu
         void renderSprites(const ScanlineContext& ctx);
         void setMode(Mode new_mode);
         void updateLY(uint8_t new_ly);
+        void checkSTATInterrupt();  // Check and trigger STAT interrupt if needed
         display::Color getPixelColor(uint8_t tile_index, uint8_t x, uint8_t y);
 
         std::shared_ptr<display::LCDDisplay> display{nullptr};

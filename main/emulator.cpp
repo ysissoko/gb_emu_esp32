@@ -274,6 +274,10 @@ namespace emulator
         ESP_LOGI(TAG, "Creating CPU...");
         cpu = std::make_unique<cpu::CPU>(*mmu, *ppu);
 
+        // Connect CPU to MemoryBus for DMA control
+        mmu->setCPU(cpu.get());
+        ESP_LOGI(TAG, "CPU linked to MemoryBus for DMA control");
+
         ESP_LOGI(TAG, "Starting async render task...");
         BaseType_t result = xTaskCreatePinnedToCore(
             ppu::PPU::render_task,

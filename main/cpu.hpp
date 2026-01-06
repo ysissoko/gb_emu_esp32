@@ -31,6 +31,12 @@ namespace cpu
         IRAM_ATTR uint8_t execute_extended(uint8_t) __attribute__((hot));
         IRAM_ATTR uint8_t step() __attribute__((hot));
         void run_frame();
+
+        // DMA control - called by MemoryBus when DMA is triggered
+        IRAM_ATTR inline void startDMA() {
+            dma_in_progress = true;
+            dma_cycles_remaining = 160;  // DMA takes 160 M-cycles (640 clock cycles)
+        }
     private:
         uint8_t a{0};
         uint8_t b{0};
@@ -53,6 +59,10 @@ namespace cpu
         bool ime_enabled{false};
         bool ei_pending{false};  // EI has 1-instruction delay
         bool halt_bug{false};
+
+        // DMA state tracking
+        bool dma_in_progress{false};
+        uint16_t dma_cycles_remaining{0};
 
         IRAM_ATTR inline bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
         IRAM_ATTR inline bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };

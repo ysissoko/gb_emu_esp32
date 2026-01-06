@@ -128,6 +128,25 @@ namespace cpu
     /// @return the number of cycles the instruction took
     uint8_t CPU::step()
     {
+        // DMA: CPU is blocked during DMA transfer (critical for timing accuracy!)
+        // DMA has highest priority - checked before HALT
+        if (UNLIKELY(dma_in_progress))
+        {
+            if (dma_cycles_remaining > 0)
+            {
+                uint8_t cycles_to_consume = (dma_cycles_remaining >= 4) ? 4 : dma_cycles_remaining;
+                dma_cycles_remaining -= cycles_to_consume;
+
+                if (dma_cycles_remaining == 0)
+                {
+                    dma_in_progress = false;
+                }
+
+                return cycles_to_consume;
+            }
+            dma_in_progress = false;  // Safety fallback
+        }
+
         // HALT: CPU is stopped, wait for interrupt
         // Return 4 cycles for cycle-accurate emulation (required for test ROMs)
         // Note: HALT optimization was removed to fix instr_timing test failures
