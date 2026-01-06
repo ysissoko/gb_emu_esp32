@@ -57,6 +57,20 @@ namespace ppu
         {
             ESP_LOGE("PPU", "Failed to initialize render pipeline!");
         }
+
+        // Set initial PPU register values (as if boot ROM ran)
+        mmu.write(0xFF40, 0x91); // LCDC: LCD enabled, BG enabled, etc.
+        mmu.write(0xFF41, 0x00); // STAT: no interrupts
+        mmu.write(0xFF42, 0x00); // SCY
+        mmu.write(0xFF43, 0x00); // SCX
+        mmu.write(0xFF44, 0x00); // LY
+        mmu.write(0xFF45, 0x00); // LYC
+        mmu.write(0xFF46, 0x00); // DMA
+        mmu.write(0xFF47, 0xFC); // BGP: white palette
+        mmu.write(0xFF48, 0xFF); // OBP0: transparent
+        mmu.write(0xFF49, 0xFF); // OBP1: transparent
+        mmu.write(0xFF4A, 0x00); // WY
+        mmu.write(0xFF4B, 0x00); // WX
     }
 
     PPU::~PPU()
@@ -72,9 +86,13 @@ namespace ppu
     void PPU::step(uint8_t cycles)
     {
         if (UNLIKELY((readLCDC() & LCDC_LCD_ENABLE) == 0)) {
-            mode = Mode::HBLANK;
-            mode_cycles = 0;
-            updateLY(0);
+            if (!mmu.isBootEnabled()) {
+                mode = Mode::HBLANK;
+                mode_cycles = 0;
+                updateLY(0);
+                // Check STAT interrupt after state changes
+                triggerSTATIfNeeded();
+            }
             return;
         }
 
@@ -136,9 +154,11 @@ namespace ppu
             }
             break;
         }
+
+
     }
 
-    void PPU::checkSTATInterrupt()
+    void PPU::triggerSTATIfNeeded()
     {
         // Read STAT register
         uint8_t stat = mmu.read(0xFF41);
@@ -185,8 +205,8 @@ namespace ppu
         stat = (stat & 0xFC) | static_cast<uint8_t>(new_mode);
         mmu.write(0xFF41, stat);
 
-        // Check if this should trigger a STAT interrupt
-        checkSTATInterrupt();
+        // Trigger STAT interrupt immediately if needed
+        triggerSTATIfNeeded();
     }
 
     void PPU::updateLY(uint8_t new_ly)
@@ -206,8 +226,8 @@ namespace ppu
 
         mmu.write(0xFF41, stat);
 
-        // Check if this should trigger a STAT interrupt
-        checkSTATInterrupt();
+        // Trigger STAT interrupt immediately if needed
+        triggerSTATIfNeeded();
     }
 
     void PPU::renderScanline()
@@ -314,9 +334,14 @@ namespace ppu
         if (UNLIKELY((ctx.lcdc & LCDC_WINDOW_ENABLE) == 0))
             return;
 
+        // Window is visible if WY <= LY AND WX <= 166
+        // WX=0-6 is off-screen (WX-7 < 0), WX=7 starts at screen pixel 0
+        // WX=166 is the last valid position (166-7=159, the last screen pixel)
+        // WX >= 167 means window is completely off-screen
         if (UNLIKELY(ctx.wy > ly || ctx.wx >= 167))
             return;
 
+        bool pixels_rendered = false;
         const int win_x_start = ctx.wx - 7;
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
 
@@ -382,11 +407,12 @@ namespace ppu
                     continue;
 
                 const int tile_pixel = (px0 + i) & 0x7;
+                pixels_rendered = true;
                 framebuffer[fb_row + sx] = tile_row[tile_pixel];
             }
         }
 
-        window_line_counter++;
+        if (pixels_rendered) window_line_counter++;
     }
 
     void PPU::scanOAM()

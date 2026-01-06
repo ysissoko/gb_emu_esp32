@@ -12,18 +12,6 @@ namespace cpu
 
     CPU::CPU(memory::MemoryBus &mmu, ppu::PPU &ppu) : mmu(mmu), ppu(ppu)
     {
-        // Initialize registers
-        a = 0x01;
-        f = 0xB0;
-        b = 0x00;
-        c = 0x13;
-        d = 0x00;
-        e = 0xD8;
-        h = 0x01;
-        l = 0x4D;
-        sp = 0xFFFE;
-        pc = 0x0100; // Start execution at 0x0100
-
         // Initialize LCD registers with default values
         // LCDC (0xFF40) - LCD Control
         mmu.write(0xFF40, 0x91); // LCD on, BG on, BG tile map at 0x9800, tile data at 0x8000
@@ -144,7 +132,7 @@ namespace cpu
 
                 return cycles_to_consume;
             }
-            dma_in_progress = false;  // Safety fallback
+            dma_in_progress = false; // Safety fallback
         }
 
         // HALT: CPU is stopped, wait for interrupt
@@ -176,13 +164,19 @@ namespace cpu
 
         static uint32_t same_pc_counter = 0;
         static uint16_t last_pc = 0;
-        
-        if (pc == last_pc) {
-            if (++same_pc_counter > 100000) {
-                ESP_LOGI("CPU blocked at", "opcode: %x, pc: %d", opcode, pc);
-                while (true) vTaskDelay(1000); // stop
+
+        if (pc == last_pc)
+        {
+            if (++same_pc_counter > 100000)
+            {
+                auto stat = mmu.read(0xFF41);
+                ESP_LOGI("CPU blocked", "opcode: %02x, pc: %04x, stat: %02x, ly: %d, ime: %d, if: %02x, ie: %02x", opcode, pc, mmu.read(0xFF41), ppu.getLy(), getIME(), mmu.read(0xFF0F), mmu.read(0xFFFF)); 
+                while (true)
+                    vTaskDelay(1000); // stop
             }
-        } else {
+        }
+        else
+        {
             same_pc_counter = 0;
             last_pc = pc;
         }
@@ -217,9 +211,12 @@ namespace cpu
         case 0x05: // DEC B
             doDec(b);
             return 4;
-        case 0x06: // LD B, d8
-            b = mmu.read(pc++);
+        case 0x06:
+        {
+            auto value = mmu.read(pc++);
+            b = value;
             return 8;
+        }
         case 0x07: // RLCA
         {
             uint8_t carry = (a >> 7) & 1;
@@ -399,7 +396,7 @@ namespace cpu
 
             setZFlag(a == 0);
             setHFlag(false);
-            setCFlag(set_carry);  // TOUJOURS set/clear le carry flag selon set_carry
+            setCFlag(set_carry); // TOUJOURS set/clear le carry flag selon set_carry
         }
             return 4;
 

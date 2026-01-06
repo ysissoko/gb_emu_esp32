@@ -73,6 +73,17 @@ namespace memory
 
     uint8_t MemoryBus::read(uint16_t address) const
     {
+        // Boot ROM (0x0000-0x00FF) if enabled
+        if (bootEnabled && address < 0x0100) {
+            return memory::BOOT_ROM[address];
+        }
+
+        // Restrict VRAM/OAM access during PPU Mode 3 (drawing)
+        if (ppu && ppu->getMode() == ::ppu::Mode::DRAWING &&
+            ((address >= 0x8000 && address < 0xA000) || (address >= 0xFE00 && address < 0xFEA0))) {
+            return 0xFF;
+        }
+
         // Taille réelle du segment "extended" (banks >= 2).
         // Robustesse: éviter tout underflow si rom_size < 0x8000.
         const size_t extended_size = (rom_size > 0x8000) ? (rom_size - 0x8000) : 0;
@@ -234,6 +245,18 @@ namespace memory
 
     void MemoryBus::write(uint16_t address, uint8_t value)
     {
+        // Disable boot ROM when writing to 0xFF50
+        if (address == 0xFF50) {
+            bootEnabled = false;
+            return;
+        }
+
+        // Restrict VRAM/OAM access during PPU Mode 3 (drawing)
+        if (ppu && ppu->getMode() == ::ppu::Mode::DRAWING &&
+            ((address >= 0x8000 && address < 0xA000) || (address >= 0xFE00 && address < 0xFEA0))) {
+            return;
+        }
+
         // Optimized: Use high nibble for fast region lookup
         switch (address >> 12) {
             case 0x0: case 0x1:
@@ -466,13 +489,19 @@ namespace memory
                 mbc_type = 3;  // MBC3
             } else if (cart_type >= 0x19 && cart_type <= 0x1E) {
                 mbc_type = 5;  // MBC5
-            } else {
-                mbc_type = 0;  // Unknown, treat as ROM ONLY
-                ESP_LOGW("MemoryBus", "Unknown cart type 0x%02X, treating as ROM ONLY", cart_type);
-            }
+             } else {
+                 mbc_type = 0;  // Unknown, treat as ROM ONLY
+                 ESP_LOGW("MemoryBus", "Unknown cart type 0x%02X, treating as ROM ONLY", cart_type);
+             }
 
-            // Check if cartridge has battery-backed SRAM
-            has_battery = save_manager::has_battery(cart_type);
+             // Check if cartridge has battery-backed SRAM
+             has_battery = save_manager::has_battery(cart_type);
+
+             // Disable boot ROM for test ROMs (small size or specific titles)
+             if (size < 0x8000) {
+                 bootEnabled = false;
+                 ESP_LOGI("MemoryBus", "Boot ROM disabled for small ROM (test mode)");
+             }
 
             // Info (approx) for logs
             size_t expected_size = 0x8000u << rom_size_code;

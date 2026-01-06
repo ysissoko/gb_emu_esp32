@@ -73,15 +73,16 @@ namespace emulator
             // Show menu and let user select ROM
             std::string rom_path = emulator->showMenuAndSelectROM();
 
-            if (!rom_path.empty())
-            {
-                ESP_LOGI(TAG, "Loading ROM: %s", rom_path.c_str());
-                emulator->loadROMFile(rom_path);
-                emulator->rom_loaded = true;
-                emulator->app_state = AppState::RUNNING_GAME;
-                ESP_LOGI(TAG, "ROM loaded, switching to RUNNING_GAME state");
-                ESP_LOGI(TAG, "Free heap after menu destroyed: %lu bytes", esp_get_free_heap_size());
-            }
+                if (!rom_path.empty())
+                {
+                    ESP_LOGI(TAG, "Loading ROM: %s", rom_path.c_str());
+                    emulator->loadROMFile(rom_path);
+                    emulator->rom_loaded = true;
+                    emulator->ppu->setShouldRender(true);  // Enable rendering now that game is loaded
+                    emulator->app_state = AppState::RUNNING_GAME;
+                    ESP_LOGI(TAG, "ROM loaded, switching to RUNNING_GAME state");
+                    ESP_LOGI(TAG, "Free heap after menu destroyed: %lu bytes", esp_get_free_heap_size());
+                }
             else
             {
                 ESP_LOGE(TAG, "No ROM selected, halting");
@@ -261,6 +262,10 @@ namespace emulator
 
         ESP_LOGI(TAG, "Creating PPU...");
         ppu = std::make_unique<ppu::PPU>(*mmu, lcd_display);
+
+        // Connect PPU to MemoryBus for mode checks
+        mmu->setPPU(ppu.get());
+        ESP_LOGI(TAG, "PPU linked to MemoryBus for mode checks");
 
         ESP_LOGI(TAG, "Creating CPU...");
         cpu = std::make_unique<cpu::CPU>(*mmu, *ppu);

@@ -37,17 +37,21 @@ namespace cpu
             dma_in_progress = true;
             dma_cycles_remaining = 160;  // DMA takes 160 M-cycles (640 clock cycles)
         }
+
+        bool getIME() const { return ime_enabled; }
     private:
-        uint8_t a{0};
+        uint8_t a{0x01};
+        uint8_t f{0xB0};
         uint8_t b{0};
-        uint8_t c{0};
+        uint8_t c{0x13};
         uint8_t d{0};
-        uint8_t e{0};
-        uint8_t f{0};
-        uint8_t h{0};
-        uint8_t l{0};
-        uint16_t sp{0};
-        uint16_t pc{0};
+        uint8_t e{0xD8};
+        uint8_t h{0x1};
+        uint8_t l{0x4D};
+
+        // sp = 0xFFFE;
+        uint16_t sp{0xFFFE};
+        uint16_t pc{0x0100};
 
         // Memory bus for accessing ROM, RAM, and I/O
         memory::MemoryBus& mmu;
@@ -56,7 +60,7 @@ namespace cpu
         ppu::PPU& ppu;
 
         bool cpu_stopped{false};
-        bool ime_enabled{false};
+        bool ime_enabled{true};
         bool ei_pending{false};  // EI has 1-instruction delay
         bool halt_bug{false};
 

@@ -101,7 +101,7 @@ namespace ppu
         // Check if frame is ready for display
         bool isFrameReady() const { return frame_ready; }
         void clearFrameReady() { frame_ready = false; }
-        
+
         // Control frame rendering for frame skipping
         inline void setShouldRender(bool should_render) { should_render_frame = should_render; }
         inline bool getShouldRender() const { return should_render_frame; }
@@ -112,6 +112,7 @@ namespace ppu
         bool init_pipeline();
         inline uint8_t getLy() const { return ly; }
         inline uint8_t getModeCycles() const { return mode_cycles; }
+        inline Mode getMode() const { return mode; }
         
     private:
         memory::MemoryBus& mmu;
@@ -135,7 +136,7 @@ namespace ppu
         uint16_t mode_cycles;
         uint8_t ly;  // Current scanline (0-153)
         bool frame_ready;
-        bool should_render_frame;  // Control frame rendering for skipping
+        bool should_render_frame = false;  // Control frame rendering for skipping, disabled initially
         uint8_t window_line_counter;  // Internal window line counter
         bool prev_stat_line;  // Previous STAT interrupt line state (for STAT blocking)
 
@@ -151,7 +152,7 @@ namespace ppu
         void renderSprites(const ScanlineContext& ctx);
         void setMode(Mode new_mode);
         void updateLY(uint8_t new_ly);
-        void checkSTATInterrupt();  // Check and trigger STAT interrupt if needed
+        void triggerSTATIfNeeded();  // Check and trigger STAT interrupt if needed
         display::Color getPixelColor(uint8_t tile_index, uint8_t x, uint8_t y);
 
         std::shared_ptr<display::LCDDisplay> display{nullptr};
