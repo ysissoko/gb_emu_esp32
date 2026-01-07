@@ -49,8 +49,8 @@ namespace display
 
     esp_err_t LCDDisplay::initialize()
     {
-        gpio_set_direction(GPIO_LCD_CS, GPIO_MODE_OUTPUT);
-        gpio_set_level(GPIO_LCD_CS, 1);
+        gpio_set_direction(gpio::LCD_CS, GPIO_MODE_OUTPUT);
+        gpio_set_level(gpio::LCD_CS, 1);
 
         // ESP32-S3 compatible GPIO mapping
         // Configure backlight (BLK)
@@ -58,7 +58,7 @@ namespace display
         bk_gpio_config.mode = GPIO_MODE_OUTPUT;
         bk_gpio_config.pin_bit_mask = 1ULL << 48;
         gpio_config(&bk_gpio_config);
-        gpio_set_level(GPIO_LCD_BL, 1); // Turn on backlight
+        gpio_set_level(gpio::LCD_BL, 1); // Turn on backlight
 
         // Note: SPI bus is initialized in main.cpp and shared with SD card
 
@@ -66,8 +66,8 @@ namespace display
 
         // Configure LCD panel IO with DMA support
         esp_lcd_panel_io_spi_config_t io_cfg = {};
-        io_cfg.cs_gpio_num = GPIO_LCD_CS;
-        io_cfg.dc_gpio_num = GPIO_LCD_DC;
+        io_cfg.cs_gpio_num = gpio::LCD_CS;
+        io_cfg.dc_gpio_num = gpio::LCD_DC;
         io_cfg.spi_mode = 0;
         io_cfg.pclk_hz = SPI_CLK_FREQ_MHZ * 1000 * 1000;
         io_cfg.trans_queue_depth = 4;
@@ -87,7 +87,7 @@ namespace display
         // Configure LCD panel
         ESP_LOGI("LCD", "Configuring LCD panel...");
         esp_lcd_panel_dev_config_t panel_cfg = {};
-        panel_cfg.reset_gpio_num = GPIO_LCD_RST; // RES
+        panel_cfg.reset_gpio_num = gpio::LCD_RST; // RES
         panel_cfg.bits_per_pixel = 16;
 
         ret = esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &panel);

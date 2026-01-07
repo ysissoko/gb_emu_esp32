@@ -1,14 +1,13 @@
 #pragma once
 
 #include "esp_err.h"
-#include "driver/gpio.h"
+#include "gpio_pins.hpp"
 
 #include <string>
 #include <array>
 #include <cstdint>
 
 namespace storage {
-    constexpr const gpio_num_t SD_GPIO_CS = GPIO_NUM_10;
     constexpr const uint8_t MAX_CHARS_ROM_NAME = 48;
     constexpr size_t MAX_ROMS = 64;
     constexpr const std::string ROMS_PATH = "roms";

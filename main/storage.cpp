@@ -159,13 +159,13 @@ namespace storage
     esp_err_t init()
     {
         // CS SD
-        gpio_set_direction(SD_GPIO_CS, GPIO_MODE_OUTPUT);
-        gpio_set_level(SD_GPIO_CS, 1);
+        gpio_set_direction(gpio::SD_CS, GPIO_MODE_OUTPUT);
+        gpio_set_level(gpio::SD_CS, 1);
 
-        ESP_LOGI(TAG, "SD CS GPIO = %d", SD_GPIO_CS);
+        ESP_LOGI(TAG, "SD CS GPIO = %d", gpio::SD_CS);
 
         sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-        slot_config.gpio_cs = SD_GPIO_CS;
+        slot_config.gpio_cs = gpio::SD_CS;
         slot_config.host_id = SPI2_HOST;
 
         esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -181,7 +181,7 @@ namespace storage
         host.slot = SPI2_HOST;
         host.max_freq_khz = 20000; // sécurité
 
-        ESP_LOGW(TAG, "SD_GPIO_CS = %d", SD_GPIO_CS);
+        ESP_LOGW(TAG, "SD_CS = %d", gpio::SD_CS);
         esp_err_t ret = esp_vfs_fat_sdspi_mount(
             MOUNT_PATH.c_str(),
             &host,

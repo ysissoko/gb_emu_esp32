@@ -1,25 +1,13 @@
 #pragma once
 
-#include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "gpio_pins.hpp"
 
 #include <cstdint>
 
 namespace controller
 {
-    // ESP32-S3 compatible GPIO mapping
-    // Directions
-    constexpr gpio_num_t BTN_RIGHT = GPIO_NUM_1;
-    constexpr gpio_num_t BTN_LEFT = GPIO_NUM_2;
-    constexpr gpio_num_t BTN_UP = GPIO_NUM_3;
-    constexpr gpio_num_t BTN_DOWN = GPIO_NUM_4;
-
-    // Action buttons
-    constexpr gpio_num_t BTN_A = GPIO_NUM_5;
-    constexpr gpio_num_t BTN_B = GPIO_NUM_6;
-    constexpr gpio_num_t BTN_SELECT = GPIO_NUM_7;
-    constexpr gpio_num_t BTN_START = GPIO_NUM_15;
 
     class Joypad
     {
@@ -88,14 +76,14 @@ namespace controller
             return false; // Bouton relâché
         }
 
-        inline bool buttonAPressed () { return pressed(controller::BTN_A); }
-        inline bool buttonBPressed () { return pressed(controller::BTN_B); }
-        inline bool buttonSelectPressed () { return pressed(controller::BTN_SELECT); }
-        inline bool buttonStartPressed () { return pressed(controller::BTN_START); }
-        inline bool buttonUpPressed () { return pressed(controller::BTN_UP); }
-        inline bool buttonDownPressed () { return pressed(controller::BTN_DOWN); }
-        inline bool buttonLeftPressed () { return pressed(controller::BTN_LEFT); }
-        inline bool buttonRightPressed () { return pressed(controller::BTN_RIGHT); }
+        inline bool buttonAPressed () { return pressed(gpio::BTN_A); }
+        inline bool buttonBPressed () { return pressed(gpio::BTN_B); }
+        inline bool buttonSelectPressed () { return pressed(gpio::BTN_SELECT); }
+        inline bool buttonStartPressed () { return pressed(gpio::BTN_START); }
+        inline bool buttonUpPressed () { return pressed(gpio::BTN_UP); }
+        inline bool buttonDownPressed () { return pressed(gpio::BTN_DOWN); }
+        inline bool buttonLeftPressed () { return pressed(gpio::BTN_LEFT); }
+        inline bool buttonRightPressed () { return pressed(gpio::BTN_RIGHT); }
     private:
     
         void initialize()
@@ -106,14 +94,14 @@ namespace controller
             cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
             cfg.intr_type = GPIO_INTR_DISABLE;
             cfg.pin_bit_mask =
-                (1ULL << BTN_RIGHT) |
-                (1ULL << BTN_LEFT) |
-                (1ULL << BTN_UP) |
-                (1ULL << BTN_DOWN) |
-                (1ULL << BTN_A) |
-                (1ULL << BTN_B) |
-                (1ULL << BTN_SELECT) |
-                (1ULL << BTN_START);
+                (1ULL << gpio::BTN_RIGHT) |
+                (1ULL << gpio::BTN_LEFT) |
+                (1ULL << gpio::BTN_UP) |
+                (1ULL << gpio::BTN_DOWN) |
+                (1ULL << gpio::BTN_A) |
+                (1ULL << gpio::BTN_B) |
+                (1ULL << gpio::BTN_SELECT) |
+                (1ULL << gpio::BTN_START);
 
             gpio_config(&cfg);
 
@@ -125,14 +113,14 @@ namespace controller
 
         inline uint8_t get_button_index(gpio_num_t pin) const
         {
-            if (pin == BTN_RIGHT) return 0;
-            if (pin == BTN_LEFT) return 1;
-            if (pin == BTN_UP) return 2;
-            if (pin == BTN_DOWN) return 3;
-            if (pin == BTN_A) return 4;
-            if (pin == BTN_B) return 5;
-            if (pin == BTN_SELECT) return 6;
-            if (pin == BTN_START) return 7;
+            if (pin == gpio::BTN_RIGHT) return 0;
+            if (pin == gpio::BTN_LEFT) return 1;
+            if (pin == gpio::BTN_UP) return 2;
+            if (pin == gpio::BTN_DOWN) return 3;
+            if (pin == gpio::BTN_A) return 4;
+            if (pin == gpio::BTN_B) return 5;
+            if (pin == gpio::BTN_SELECT) return 6;
+            if (pin == gpio::BTN_START) return 7;
             return 0;
         }
 
