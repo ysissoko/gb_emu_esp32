@@ -263,12 +263,79 @@ namespace cpu
 
         static uint32_t same_pc_counter = 0;
         static uint16_t last_pc = 0;
+        static uint32_t total_instruction_count = 0;
+
+        total_instruction_count++;
+
+        // Periodic debug logging (every 100,000 instructions)
+        if (UNLIKELY(debug_logs_enabled && (total_instruction_count % 100000) == 0))
+        {
+            uint8_t lcdc = mmu.read(0xFF40);
+            ESP_LOGI("CPU", "[Debug] Instructions: %u | PC: %04X OP: %02X | AF:%02X%02X BC:%02X%02X DE:%02X%02X HL:%02X%02X SP:%04X | LY:%d LCDC:%02X IME:%d IF:%02X IE:%02X",
+                     total_instruction_count, pc_before_fetch, opcode,
+                     a, f, b, c, d, e, h, l, sp,
+                     ppu.getLy(), lcdc, ime_enabled, mmu.read(0xFF0F), mmu.read(0xFFFF));
+        }
+
+        // Special logging for tight loops (detect polling loops)
+        static uint16_t loop_start_pc = 0;
+
+        // Detect JR NZ (0x20) or JR Z (0x28) with negative offset (loop back)
+        if (UNLIKELY(opcode == 0x20 || opcode == 0x28))
+        {
+            int8_t offset = static_cast<int8_t>(mmu.read(pc));
+            if (offset < 0)  // Backward jump = potential loop
+            {
+                uint16_t loop_target = pc + 1 + offset;
+
+                if (loop_target == loop_start_pc)
+                {
+                    loop_iteration_count++;
+
+                    // Log every 10,000 loop iterations
+                    if (loop_iteration_count % 10000 == 0)
+                    {
+                        ESP_LOGW("CPU", "[Polling Loop] PC:%04X->%04X (iteration %u) | AF:%02X%02X | LY:%d STAT:%02X IME:%d IF:%02X IE:%02X",
+                                 pc_before_fetch, loop_target, loop_iteration_count,
+                                 a, f, ppu.getLy(), mmu.read(0xFF41), ime_enabled, mmu.read(0xFF0F), mmu.read(0xFFFF));
+                    }
+                }
+                else
+                {
+                    loop_start_pc = loop_target;
+                    loop_iteration_count = 1;
+                }
+            }
+        }
+        else
+        {
+            // Reset loop detection if we execute a non-jump instruction
+            if (loop_iteration_count > 0)
+            {
+                loop_iteration_count = 0;
+            }
+        }
 
         if (pc == last_pc)
         {
-            // Detect infinite loop much earlier (50 iterations for boot ROM debugging)
-            // This ensures the trace buffer captures context BEFORE the loop, not just the loop itself
-            if (++same_pc_counter > 1000000)
+            same_pc_counter++;
+
+            // Early warning at 10,000 iterations
+            if (UNLIKELY(same_pc_counter == 10000))
+            {
+                ESP_LOGW("CPU", "Potential freeze detected! PC stuck at %04X for %u iterations (opcode: %02X)",
+                         pc, same_pc_counter, opcode);
+                ESP_LOGW("CPU", "  Registers: AF:%02X%02X BC:%02X%02X DE:%02X%02X HL:%02X%02X SP:%04X",
+                         a, f, b, c, d, e, h, l, sp);
+                ESP_LOGW("CPU", "  PPU: LY:%d Mode:%d Cycles:%d LCDC:%02X STAT:%02X",
+                         ppu.getLy(), static_cast<int>(ppu.getMode()), ppu.getModeCycles(),
+                         mmu.read(0xFF40), mmu.read(0xFF41));
+                ESP_LOGW("CPU", "  Interrupts: IME:%d IF:%02X IE:%02X",
+                         ime_enabled, mmu.read(0xFF0F), mmu.read(0xFFFF));
+            }
+
+            // Critical freeze at 50,000 iterations
+            if (same_pc_counter > 50000)
             {
                 ESP_LOGE("CPU", "CPU BLOCKED (infinite loop detected)! opcode: %02x, pc: %04x, stat: %02x, ly: %d, ime: %d, if: %02x, ie: %02x, bootEnabled: %d",
                          opcode, pc, mmu.read(0xFF41), ppu.getLy(), getIME(), mmu.read(0xFF0F), mmu.read(0xFFFF), mmu.isBootEnabled());
@@ -1049,7 +1116,17 @@ namespace cpu
         case 0xE0: // LDH (0xFF00 + n), A
         {
             uint8_t offset = mmu.read(pc++);
-            mmu.write(0xFF00 + offset, a);
+            uint16_t addr = 0xFF00 + offset;
+            uint16_t current_pc = pc - 2;  // PC before this instruction
+
+            // Debug: Log writes to LCDC
+            if (UNLIKELY(debug_logs_enabled && addr == 0xFF40))
+            {
+                ESP_LOGW("CPU", "[PC:%04X] LDH ($FF40), A = $%02X (LCDC %s)",
+                         current_pc, a, (a & 0x80) ? "ENABLED" : "DISABLED");
+            }
+
+            mmu.write(addr, a);
         }
             return 12;
         case 0xE1: // POP HL
@@ -1066,11 +1143,20 @@ namespace cpu
         case 0xE6: // AND d8
         {
             uint8_t value = mmu.read(pc++);
+            uint16_t current_pc = pc - 2;  // PC before this instruction
+            uint8_t a_before = a;
             a &= value;
             setZFlag(a == 0);
             setNFlag(false);
             setHFlag(true);
             setCFlag(false);
+
+            // Debug: Log AND operations in polling range
+            if (UNLIKELY(debug_logs_enabled && (current_pc >= 0x0095 && current_pc <= 0x009F)))
+            {
+                ESP_LOGW("CPU", "[PC:%04X] AND $%02X: A was $%02X, now $%02X, Z=%d",
+                         current_pc, value, a_before, a, readZFlag() ? 1 : 0);
+            }
         }
             return 8;
         case 0xE7: // RST 20H
@@ -1116,7 +1202,28 @@ namespace cpu
         case 0xF0: // LDH A, (0xFF00 + n)
         {
             uint8_t offset = mmu.read(pc++);
-            a = mmu.read(0xFF00 + offset);
+            uint16_t addr = 0xFF00 + offset;
+            uint16_t current_pc = pc - 2;  // PC before this instruction
+            a = mmu.read(addr);
+
+            // Debug: Log I/O reads when PC is in polling range (0x0097)
+            if (UNLIKELY(debug_logs_enabled && (current_pc >= 0x0095 && current_pc <= 0x009F)))
+            {
+                const char* reg_name = "???";
+                switch (addr)
+                {
+                    case 0xFF00: reg_name = "P1 (Joypad)"; break;
+                    case 0xFF0F: reg_name = "IF (Interrupt Flag)"; break;
+                    case 0xFF40: reg_name = "LCDC"; break;
+                    case 0xFF41: reg_name = "STAT"; break;
+                    case 0xFF42: reg_name = "SCY"; break;
+                    case 0xFF43: reg_name = "SCX"; break;
+                    case 0xFF44: reg_name = "LY"; break;
+                    case 0xFF45: reg_name = "LYC"; break;
+                    default: reg_name = "I/O"; break;
+                }
+                ESP_LOGW("CPU", "[PC:%04X] LDH A, ($%04X) [%s] = $%02X", current_pc, addr, reg_name, a);
+            }
         }
             return 12;
         case 0xF1: // POP AF

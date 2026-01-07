@@ -39,6 +39,11 @@ namespace cpu
         }
 
         bool getIME() const { return ime_enabled; }
+
+        // Debug control
+        void enableDebugLogs(bool enable) { debug_logs_enabled = enable; }
+        bool isDebugEnabled() const { return debug_logs_enabled; }
+
     public:
         // Initialize CPU registers to post-bootrom DMG state (for test ROMs that skip bootrom)
         void initializePostBootROMState();
@@ -72,7 +77,11 @@ namespace cpu
         bool dma_in_progress{false};
         uint16_t dma_cycles_remaining{0};
 
-        // Debug: Circular buffer for instruction history (last 100 instructions before crash)
+        // Debug control
+        bool debug_logs_enabled{false};
+        uint32_t loop_iteration_count{0};  // Track polling loop iterations
+
+        // Debug: Circular buffer for instruction history (last 500 instructions before crash)
         struct InstructionTrace {
             uint16_t pc;
             uint8_t opcode;

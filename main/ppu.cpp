@@ -80,9 +80,19 @@ namespace ppu
         // When LCD is disabled (LCDC bit 7 = 0), reset PPU state
         // This must happen even during boot ROM execution
         if (UNLIKELY((readLCDC() & LCDC_LCD_ENABLE) == 0)) {
+            // Force PPU to HBLANK mode when LCD is off
             mode = Mode::HBLANK;
             mode_cycles = 0;
+
+            // Update LY to 0 (LCD off state)
             updateLY(0);
+
+            // Force STAT to show mode 0 (HBLANK) when LCD is disabled
+            // This is required for games that poll STAT even when LCD is off
+            uint8_t stat = mmu.read(0xFF41);
+            stat = (stat & 0xFC);  // Clear mode bits (0-1), keep other bits
+            mmu.write(0xFF41, stat);
+
             // Check STAT interrupt after state changes
             triggerSTATIfNeeded();
             return;

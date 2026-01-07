@@ -27,6 +27,13 @@ namespace emulator {
             void run();
             void start();
             void loadROM(const uint8_t* rom_buffer, size_t rom_size);
+
+            // Debug control
+            void enableCPUDebugLogs(bool enable) {
+                if (cpu) {
+                    cpu->enableDebugLogs(enable);
+                }
+            }
             
         private:
             static void emulator_task(void *arg);

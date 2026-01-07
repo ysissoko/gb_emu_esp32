@@ -287,7 +287,11 @@ namespace memory
                     else if (address == timer::TIMA_REGISTER) return timer->readTIMA();
                     else if (address == timer::TMA_REGISTER) return timer->readTMA();
                     else if (address == timer::TAC_REGISTER) return timer->readTAC();
-                    else if (address == IF_REGISTER) return if_register;
+                    else if (address == IF_REGISTER) return if_register | 0xE0;  // Bits 7-5 always 1
+                    else if (address == 0xFF41) {
+                        // STAT register: bit 7 is always 1 (unused)
+                        return io_registers[0x41] | 0x80;
+                    }
                     else if (address >= 0xFF10 && address <= 0xFF3F) {
                         // APU registers (0xFF10-0xFF3F)
                         return apu->read(address);
@@ -602,7 +606,8 @@ namespace memory
 
         // Calculate ROM bank mask based on actual ROM size
         // This prevents accessing non-existent banks (e.g., bank 257 in 64-bank ROM)
-        size_t total_banks = (rom_size + 0x3FFF) / 0x4000;  // Roundal_banks <= 2) {
+        size_t total_banks = (rom_size + 0x3FFF) / 0x4000;  // Round up
+        if (total_banks <= 2) {
             rom_bank_mask = 0x01;  // 2 banks (32KB ROM)
         } else if (total_banks <= 4) {
             rom_bank_mask = 0x03;  // 4 banks (64KB)

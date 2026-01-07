@@ -23,6 +23,10 @@ extern "C" void app_main(void)
 
     ESP_LOGI(TAG, "Emulator initialized, starting main loop...");
 
+    // Enable CPU debug logs for troubleshooting (uncomment if needed)
+    // emulator.enableCPUDebugLogs(true);
+    // ESP_LOGI(TAG, "CPU debug logs enabled");
+
     // Lancer la boucle principale (menu -> jeu -> menu -> ...)
     emulator.run();
 
