@@ -48,6 +48,9 @@ namespace memory
             memset(external_ram, 0x00, EXTERNAL_RAM_SIZE);
         }
 
+        // Initialize I/O registers to DMG post-boot ROM state (boot ROM disabled)
+        initializePostBootROMState();
+
         // Initialize timer (must be after member initialization)
         timer = std::make_unique<timer::Timer>(*this);
         // Initialize serial port
@@ -69,6 +72,68 @@ namespace memory
             heap_caps_free(external_ram);
             external_ram = nullptr;
         }
+    }
+
+    void MemoryBus::initializePostBootROMState()
+    {
+        // Initialize I/O registers to their state after the DMG boot ROM has executed
+        // This allows games to run correctly without executing the boot ROM
+        // Values taken from Pan Docs (DMG post-boot state)
+
+        ESP_LOGI("MemoryBus", "Initializing I/O registers to post-bootrom DMG state");
+
+        // Serial transfer
+        io_registers[0x01] = 0x00;  // SB - Serial transfer data
+        io_registers[0x02] = 0x7E;  // SC - Serial transfer control
+
+        // Timer
+        io_registers[0x04] = 0xAB;  // DIV - Divider register (arbitrary start value)
+        io_registers[0x05] = 0x00;  // TIMA - Timer counter
+        io_registers[0x06] = 0x00;  // TMA - Timer modulo
+        io_registers[0x07] = 0xF8;  // TAC - Timer control
+
+        // Interrupt Flag - Clear all interrupt requests at startup
+        // Upper 3 bits are unused and read as 1, but interrupt bits (0-4) must be 0
+        if_register = 0xE0;  // 0b11100000 - no interrupts pending
+
+        // Sound registers
+        io_registers[0x10] = 0x80;  // NR10 - Channel 1 sweep
+        io_registers[0x11] = 0xBF;  // NR11 - Channel 1 length/wave pattern
+        io_registers[0x12] = 0xF3;  // NR12 - Channel 1 volume envelope
+        io_registers[0x14] = 0xBF;  // NR14 - Channel 1 frequency hi
+        io_registers[0x16] = 0x3F;  // NR21 - Channel 2 length/wave pattern
+        io_registers[0x17] = 0x00;  // NR22 - Channel 2 volume envelope
+        io_registers[0x19] = 0xBF;  // NR24 - Channel 2 frequency hi
+        io_registers[0x1A] = 0x7F;  // NR30 - Channel 3 sound on/off
+        io_registers[0x1B] = 0xFF;  // NR31 - Channel 3 sound length
+        io_registers[0x1C] = 0x9F;  // NR32 - Channel 3 select output level
+        io_registers[0x1E] = 0xBF;  // NR34 - Channel 3 frequency hi
+        io_registers[0x20] = 0xFF;  // NR41 - Channel 4 sound length
+        io_registers[0x21] = 0x00;  // NR42 - Channel 4 volume envelope
+        io_registers[0x22] = 0x00;  // NR43 - Channel 4 polynomial counter
+        io_registers[0x23] = 0xBF;  // NR44 - Channel 4 counter/consecutive
+        io_registers[0x24] = 0x77;  // NR50 - Channel control / ON-OFF / Volume
+        io_registers[0x25] = 0xF3;  // NR51 - Sound output terminal selection
+        io_registers[0x26] = 0xF1;  // NR52 - Sound on/off
+
+        // LCD Control registers
+        io_registers[0x40] = 0x91;  // LCDC - LCD control
+        io_registers[0x41] = 0x85;  // STAT - LCD status (mode will be updated by PPU)
+        io_registers[0x42] = 0x00;  // SCY - Scroll Y
+        io_registers[0x43] = 0x00;  // SCX - Scroll X
+        io_registers[0x44] = 0x00;  // LY - LCD Y coordinate (updated by PPU)
+        io_registers[0x45] = 0x00;  // LYC - LY compare
+        io_registers[0x46] = 0xFF;  // DMA - DMA transfer
+        io_registers[0x47] = 0xFC;  // BGP - BG palette data
+        io_registers[0x48] = 0xFF;  // OBP0 - Object palette 0 data
+        io_registers[0x49] = 0xFF;  // OBP1 - Object palette 1 data
+        io_registers[0x4A] = 0x00;  // WY - Window Y position
+        io_registers[0x4B] = 0x00;  // WX - Window X position
+
+        // Interrupt Enable
+        ie_register = 0x00;
+
+        ESP_LOGI("MemoryBus", "I/O registers initialized to post-bootrom state");
     }
 
     uint8_t MemoryBus::read(uint16_t address) const
@@ -245,9 +310,8 @@ namespace memory
 
     void MemoryBus::write(uint16_t address, uint8_t value)
     {
-        // Disable boot ROM when writing to 0xFF50
+        // Disable boot ROM when writing to 0xFF50 (ignored since boot ROM is disabled)
         if (address == 0xFF50) {
-            bootEnabled = false;
             return;
         }
 
@@ -289,9 +353,11 @@ namespace memory
                     uint8_t bank = value & 0x1F;
                     if (UNLIKELY(bank == 0)) bank = 1;  // Bank 0 forbidden
                     rom_bank = (rom_bank & 0xE0) | bank;
+                    rom_bank &= rom_bank_mask;  // Mask to valid banks
                 } else if (mbc_type == 5) {
                     // MBC5: 9-bit bank number (lower 8 bits)
                     rom_bank = (rom_bank & 0x100) | value;
+                    rom_bank &= rom_bank_mask;  // Mask to valid banks
                 }
                 return;
 
@@ -302,6 +368,7 @@ namespace memory
                     if (LIKELY(mbc_mode == 0)) {
                         // ROM banking mode: upper 2 bits of ROM bank
                         rom_bank = (rom_bank & 0x1F) | ((value & 0x03) << 5);
+                        rom_bank &= rom_bank_mask;  // Mask to valid banks
                     } else {
                         // RAM banking mode
                         ram_bank = value & 0x03;
@@ -312,6 +379,7 @@ namespace memory
                 } else if (mbc_type == 5) {
                     // MBC5: 9th bit of ROM bank
                     rom_bank = (rom_bank & 0xFF) | ((value & 0x01) << 8);
+                    rom_bank &= rom_bank_mask;  // Mask to valid banks
                 }
                 return;
 
@@ -516,7 +584,6 @@ namespace memory
         // Load first 32KB into base ROM (banks 0 and 1)
         size_t base_size = (size > rom.size()) ? rom.size() : size;
         std::memcpy(rom.data(), data, base_size);
-        ESP_LOGI("MemoryBus", "Loaded %zu bytes into base ROM", base_size);
 
         // Load remaining banks into extended ROM (PSRAM)
         if (size > rom.size() && rom_extended) {
@@ -532,6 +599,30 @@ namespace memory
         } else if (size <= rom.size()) {
             ESP_LOGI("MemoryBus", "ROM fits in base 32KB, no extended banks needed");
         }
+
+        // Calculate ROM bank mask based on actual ROM size
+        // This prevents accessing non-existent banks (e.g., bank 257 in 64-bank ROM)
+        size_t total_banks = (rom_size + 0x3FFF) / 0x4000;  // Roundal_banks <= 2) {
+            rom_bank_mask = 0x01;  // 2 banks (32KB ROM)
+        } else if (total_banks <= 4) {
+            rom_bank_mask = 0x03;  // 4 banks (64KB)
+        } else if (total_banks <= 8) {
+            rom_bank_mask = 0x07;  // 8 banks (128KB)
+        } else if (total_banks <= 16) {
+            rom_bank_mask = 0x0F;  // 16 banks (256KB)
+        } else if (total_banks <= 32) {
+            rom_bank_mask = 0x1F;  // 32 banks (512KB)
+        } else if (total_banks <= 64) {
+            rom_bank_mask = 0x3F;  // 64 banks (1MB) ← Pokemon Blue
+        } else if (total_banks <= 128) {
+            rom_bank_mask = 0x7F;  // 128 banks (2MB)
+        } else if (total_banks <= 256) {
+            rom_bank_mask = 0xFF;  // 256 banks (4MB)
+        } else {
+            rom_bank_mask = 0x1FF;  // 512 banks (8MB, MBC5 maximum)
+        }
+
+        ESP_LOGI("MemoryBus", "ROM has %zu banks, using mask 0x%03X", total_banks, rom_bank_mask);
 
         // Initialize bank registers
         rom_bank = 1;  // Start with bank 1 (bank 0 is fixed at 0x0000-0x3FFF)
@@ -550,8 +641,9 @@ namespace memory
             ESP_LOGI("MemoryBus", "RTC initialized (MBC3)");
         }
 
+        // Boot ROM is disabled, I/O registers already initialized in constructor
         ESP_LOGI("MemoryBus", "ROM loaded successfully: %zu KB total, MBC%d, battery=%d",
-                 size / 1024, mbc_type, has_battery);
+                 rom_size / 1024, mbc_type, has_battery);
     }
 
     void MemoryBus::stepTimer(uint8_t cycles)

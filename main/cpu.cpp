@@ -12,29 +12,25 @@ namespace cpu
 
     CPU::CPU(memory::MemoryBus &mmu, ppu::PPU &ppu) : mmu(mmu), ppu(ppu)
     {
-        // Initialize LCD registers with default values
-        // LCDC (0xFF40) - LCD Control
-        mmu.write(0xFF40, 0x91); // LCD on, BG on, BG tile map at 0x9800, tile data at 0x8000
-        // STAT (0xFF41) - LCD Status
-        mmu.write(0xFF41, 0x00);
-        // SCY (0xFF42) - Scroll Y
-        mmu.write(0xFF42, 0x00);
-        // SCX (0xFF43) - Scroll X
-        mmu.write(0xFF43, 0x00);
-        // LY (0xFF44) - LCD Y-Coordinate (read-only)
-        mmu.write(0xFF44, 0x00);
-        // LYC (0xFF45) - LY Compare
-        mmu.write(0xFF45, 0x00);
-        // BGP (0xFF47) - Background Palette
-        mmu.write(0xFF47, 0xE4); // 11 10 01 00 (black, dark gray, light gray, white)
-        // OBP0 (0xFF48) - Object Palette 0
-        mmu.write(0xFF48, 0xE4);
-        // OBP1 (0xFF49) - Object Palette 1
-        mmu.write(0xFF49, 0xE4);
-        // WY (0xFF4A) - Window Y Position
-        mmu.write(0xFF4A, 0x00);
-        // WX (0xFF4B) - Window X Position
-        mmu.write(0xFF4B, 0x00);
+        // Initialize instruction trace buffer to zero
+        for (auto& trace : trace_buffer) {
+            trace = {};  // Zero-initialize all fields
+        }
+
+        // Initialize CPU registers to DMG post-boot ROM state (skip boot ROM)
+        // These values match the state after the official DMG boot ROM completes
+        a = 0x01;       // DMG identifier
+        f = 0xB0;       // Z=1, N=0, H=1, C=1
+        b = 0x00;
+        c = 0x13;
+        d = 0x00;
+        e = 0xD8;
+        h = 0x01;
+        l = 0x4D;
+        sp = 0xFFFE;
+        pc = 0x0100;    // Start at game entry point
+
+        ESP_LOGI("CPU", "CPU registers initialized to post-boot ROM DMG state (PC=0x0100)");
     }
 
     CPU::~CPU()
@@ -42,9 +38,31 @@ namespace cpu
         // Destructor implementation
     }
 
+    void CPU::initializePostBootROMState()
+    {
+        // Initialize CPU registers to DMG post-bootrom state
+        // These values match the state after the official DMG bootrom completes execution
+        a = 0x01;  // A register
+        f = 0xB0;  // Flags: Z=1, N=0, H=1, C=1
+        b = 0x00;
+        c = 0x13;
+        d = 0x00;
+        e = 0xD8;
+        h = 0x01;
+        l = 0x4D;
+
+        sp = 0xFFFE;  // Stack pointer
+        pc = 0x0100;  // Program counter (start of cartridge ROM)
+
+        ime_enabled = false;  // IME disabled after bootrom
+
+        ESP_LOGI("CPU", "CPU registers initialized to post-bootrom DMG state (PC=0x0100)");
+    }
+
     /// @brief run starts the CPU execution loop
     void CPU::run_frame()
     {
+
         constexpr int CYCLES_PER_SCANLINE = 456;
         constexpr int TOTAL_SCANLINES = 154;
 
@@ -97,19 +115,96 @@ namespace cpu
             if (pending & (1 << bit_idx))
             {
                 ime_enabled = false;
-                // Set the flag to false
+                // Clear the interrupt flag
                 mmu.write(memory::IF_REGISTER, (if_ & ~(1 << bit_idx)) | 0xE0);
-                // push PC on stack
-                sp--;
-                mmu.write(sp, (pc >> 8) & 0xFF); // MSB
-                sp--;
-                mmu.write(sp, pc & 0xFF); // LSB
+                // Push PC on stack (same as RST/CALL)
+                sp -= 2;
+                mmu.write16(sp, pc);
+                // Jump to interrupt vector
                 pc = irq_vec.at(bit_idx);
                 return true;
             }
         }
 
         return false;
+    }
+
+    void CPU::recordInstruction(uint16_t pc_val, uint8_t opcode_val)
+    {
+        InstructionTrace& trace = trace_buffer[trace_index];
+        trace.pc = pc_val;
+        trace.opcode = opcode_val;
+        trace.a = a;
+        trace.f = f;
+        trace.b = b;
+        trace.c = c;
+        trace.d = d;
+        trace.e = e;
+        trace.h = h;
+        trace.l = l;
+        trace.sp = sp;
+        trace.ime = ime_enabled;
+        trace.if_reg = mmu.read(memory::IF_REGISTER);
+        trace.ie_reg = mmu.read(memory::IE_REGISTER);
+
+        trace_index = (trace_index + 1) % TRACE_BUFFER_SIZE;
+    }
+
+    void CPU::dumpTraceBuffer() const
+    {
+        // Generate unique filename with tick count
+        char filename[64];
+        snprintf(filename, sizeof(filename), "/sdcard/cpu_trace_%llu.txt", esp_timer_get_time() / 1000);
+
+        ESP_LOGI("CPU", "Dumping CPU trace to: %s", filename);
+
+        FILE* trace_file = fopen(filename, "w");
+        if (!trace_file)
+        {
+            ESP_LOGE("CPU", "Failed to open trace file for writing! Dumping to console instead.");
+
+            // Fallback to console logging
+            ESP_LOGI("CPU", "=== CPU INSTRUCTION TRACE (Last %d instructions before freeze) ===", TRACE_BUFFER_SIZE);
+            for (size_t i = 0; i < TRACE_BUFFER_SIZE; i++)
+            {
+                size_t idx = (trace_index + i) % TRACE_BUFFER_SIZE;
+                const InstructionTrace& trace = trace_buffer[idx];
+                if (trace.pc == 0 && trace.opcode == 0) continue;
+                ESP_LOGI("CPU", "[%3zu] PC:%04X OP:%02X | AF:%02X%02X BC:%02X%02X DE:%02X%02X HL:%02X%02X SP:%04X | IME:%d IF:%02X IE:%02X",
+                         i, trace.pc, trace.opcode, trace.a, trace.f, trace.b, trace.c,
+                         trace.d, trace.e, trace.h, trace.l, trace.sp, trace.ime, trace.if_reg, trace.ie_reg);
+            }
+            ESP_LOGI("CPU", "=== END OF TRACE ===");
+            return;
+        }
+
+        // Write header
+        fprintf(trace_file, "=== CPU INSTRUCTION TRACE (Last %d instructions before freeze) ===\n", TRACE_BUFFER_SIZE);
+        fprintf(trace_file, "Timestamp: %llu ms\n", esp_timer_get_time() / 1000);
+        fprintf(trace_file, "Format: [Index] PC:XXXX OP:XX | AF:XXXX BC:XXXX DE:XXXX HL:XXXX SP:XXXX | IME:X IF:XX IE:XX\n\n");
+
+        // Write trace buffer (oldest to newest)
+        int valid_entries = 0;
+        for (size_t i = 0; i < TRACE_BUFFER_SIZE; i++)
+        {
+            size_t idx = (trace_index + i) % TRACE_BUFFER_SIZE;
+            const InstructionTrace& trace = trace_buffer[idx];
+
+            // Skip uninitialized entries (PC=0 and opcode=0)
+            if (trace.pc == 0 && trace.opcode == 0)
+                continue;
+
+            fprintf(trace_file, "[%3zu] PC:%04X OP:%02X | AF:%02X%02X BC:%02X%02X DE:%02X%02X HL:%02X%02X SP:%04X | IME:%d IF:%02X IE:%02X\n",
+                    i, trace.pc, trace.opcode,
+                    trace.a, trace.f, trace.b, trace.c, trace.d, trace.e, trace.h, trace.l, trace.sp,
+                    trace.ime, trace.if_reg, trace.ie_reg);
+            valid_entries++;
+        }
+
+        fprintf(trace_file, "\n=== END OF TRACE (%d valid entries) ===\n", valid_entries);
+        fclose(trace_file);
+
+        ESP_LOGI("CPU", "Trace saved to %s (%d entries)", filename, valid_entries);
     }
 
     /// @brief step executes a single CPU instruction
@@ -151,6 +246,7 @@ namespace cpu
         }
 
         uint8_t opcode;
+        uint16_t pc_before_fetch = pc;
 
         if (halt_bug)
         {
@@ -162,15 +258,33 @@ namespace cpu
             opcode = mmu.read(pc++);
         }
 
+        // Record this instruction in the trace buffer
+        recordInstruction(pc_before_fetch, opcode);
+
         static uint32_t same_pc_counter = 0;
         static uint16_t last_pc = 0;
 
         if (pc == last_pc)
         {
-            if (++same_pc_counter > 100000)
+            // Detect infinite loop much earlier (50 iterations for boot ROM debugging)
+            // This ensures the trace buffer captures context BEFORE the loop, not just the loop itself
+            if (++same_pc_counter > 1000000)
             {
-                auto stat = mmu.read(0xFF41);
-                ESP_LOGI("CPU blocked", "opcode: %02x, pc: %04x, stat: %02x, ly: %d, ime: %d, if: %02x, ie: %02x", opcode, pc, mmu.read(0xFF41), ppu.getLy(), getIME(), mmu.read(0xFF0F), mmu.read(0xFFFF)); 
+                ESP_LOGE("CPU", "CPU BLOCKED (infinite loop detected)! opcode: %02x, pc: %04x, stat: %02x, ly: %d, ime: %d, if: %02x, ie: %02x, bootEnabled: %d",
+                         opcode, pc, mmu.read(0xFF41), ppu.getLy(), getIME(), mmu.read(0xFF0F), mmu.read(0xFFFF), mmu.isBootEnabled());
+
+                // Dump the instruction trace buffer to see what led to this
+                dumpTraceBuffer();
+
+                ESP_LOGE("CPU", "System halted. Please analyze the trace above.");
+
+                // If boot ROM is stuck, show helpful message
+                if (mmu.isBootEnabled()) {
+                    ESP_LOGE("CPU", "Boot ROM is stuck in infinite loop!");
+                    ESP_LOGE("CPU", "This usually means the ROM header is invalid (logo or checksum).");
+                    ESP_LOGE("CPU", "Check ROM header at 0x0104-0x014F");
+                }
+
                 while (true)
                     vTaskDelay(1000); // stop
             }
@@ -882,10 +996,13 @@ namespace cpu
             }
             return 8;
         case 0xD9: // RETI
-            pc = mmu.read16(sp);
+        {
+            uint16_t return_addr = mmu.read16(sp);
+            pc = return_addr;
             sp += 2;
             ime_enabled = true;
             return 16;
+        }
         case 0xDA: // JP C, a16
         {
             uint16_t addr = mmu.read16(pc);

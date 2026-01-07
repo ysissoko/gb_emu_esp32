@@ -124,6 +124,9 @@ namespace memory
         // Check if boot ROM is enabled
         bool isBootEnabled() const { return bootEnabled; }
 
+        // Initialize I/O registers to post-bootrom DMG state (skip bootrom execution)
+        void initializePostBootROMState();
+
         // SRAM save/load
         esp_err_t loadSRAM();
         esp_err_t saveSRAM();
@@ -172,12 +175,13 @@ namespace memory
         // MBC (Memory Bank Controller) registers
         uint8_t mbc_type{0};        // 0=ROM only, 1=MBC1, 2=MBC2, 3=MBC3, 5=MBC5
         uint16_t rom_bank{1};       // Current ROM bank (1-511, bank 0 always at 0x0000-0x3FFF)
+        uint16_t rom_bank_mask{0x1FF}; // Mask for valid ROM banks (default 512 banks = 9 bits)
         bool ram_enabled{false};    // External RAM enabled
         uint8_t ram_bank{0};        // Current RAM bank (0-15)
         uint8_t mbc_mode{0};        // MBC1 mode register
         size_t rom_size{0};         // Total ROM size in bytes
         ppu::PPU* ppu = nullptr;    // PPU reference for mode checks
-        bool bootEnabled = false;   // Boot ROM disabled by default
+        bool bootEnabled = false;   // Boot ROM disabled by default (skip animation, faster startup)
 
         // Extended ROM storage for MBC (allocated in PSRAM)
         uint8_t* rom_extended{nullptr};  // Up to 2MB (128 banks × 16KB)

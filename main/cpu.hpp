@@ -39,19 +39,23 @@ namespace cpu
         }
 
         bool getIME() const { return ime_enabled; }
-    private:
-        uint8_t a{0x01};
-        uint8_t f{0xB0};
-        uint8_t b{0};
-        uint8_t c{0x13};
-        uint8_t d{0};
-        uint8_t e{0xD8};
-        uint8_t h{0x1};
-        uint8_t l{0x4D};
+    public:
+        // Initialize CPU registers to post-bootrom DMG state (for test ROMs that skip bootrom)
+        void initializePostBootROMState();
 
-        // sp = 0xFFFE;
-        uint16_t sp{0xFFFE};
-        uint16_t pc{0x0100};
+    private:
+        // Initialize registers to bootrom start state (will be updated during/after bootrom execution)
+        uint8_t a{0x00};
+        uint8_t f{0x00};
+        uint8_t b{0x00};
+        uint8_t c{0x00};
+        uint8_t d{0x00};
+        uint8_t e{0x00};
+        uint8_t h{0x00};
+        uint8_t l{0x00};
+
+        uint16_t sp{0xFFFE};  // SP always starts at 0xFFFE
+        uint16_t pc{0x0000};  // Start at 0x0000 to execute bootrom
 
         // Memory bus for accessing ROM, RAM, and I/O
         memory::MemoryBus& mmu;
@@ -60,13 +64,30 @@ namespace cpu
         ppu::PPU& ppu;
 
         bool cpu_stopped{false};
-        bool ime_enabled{true};
+        bool ime_enabled{false};  // IME disabled after bootrom (game will enable it with EI)
         bool ei_pending{false};  // EI has 1-instruction delay
         bool halt_bug{false};
 
         // DMA state tracking
         bool dma_in_progress{false};
         uint16_t dma_cycles_remaining{0};
+
+        // Debug: Circular buffer for instruction history (last 100 instructions before crash)
+        struct InstructionTrace {
+            uint16_t pc;
+            uint8_t opcode;
+            uint8_t a, f, b, c, d, e, h, l;
+            uint16_t sp;
+            bool ime;
+            uint8_t if_reg;
+            uint8_t ie_reg;
+        };
+        static constexpr size_t TRACE_BUFFER_SIZE = 500;  // Increased to capture more context before freeze
+        std::array<InstructionTrace, TRACE_BUFFER_SIZE> trace_buffer;
+        size_t trace_index{0};
+
+        void recordInstruction(uint16_t pc_val, uint8_t opcode_val);
+        void dumpTraceBuffer() const;
 
         IRAM_ATTR inline bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
         IRAM_ATTR inline bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };

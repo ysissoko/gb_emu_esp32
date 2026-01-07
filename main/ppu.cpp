@@ -58,19 +58,11 @@ namespace ppu
             ESP_LOGE("PPU", "Failed to initialize render pipeline!");
         }
 
-        // Set initial PPU register values (as if boot ROM ran)
-        mmu.write(0xFF40, 0x91); // LCDC: LCD enabled, BG enabled, etc.
-        mmu.write(0xFF41, 0x00); // STAT: no interrupts
-        mmu.write(0xFF42, 0x00); // SCY
-        mmu.write(0xFF43, 0x00); // SCX
-        mmu.write(0xFF44, 0x00); // LY
-        mmu.write(0xFF45, 0x00); // LYC
-        mmu.write(0xFF46, 0x00); // DMA
-        mmu.write(0xFF47, 0xFC); // BGP: white palette
-        mmu.write(0xFF48, 0xFF); // OBP0: transparent
-        mmu.write(0xFF49, 0xFF); // OBP1: transparent
-        mmu.write(0xFF4A, 0x00); // WY
-        mmu.write(0xFF4B, 0x00); // WX
+        // NOTE: LCD registers are NOT initialized here!
+        // They will be initialized by either:
+        //   1. The boot ROM (if enabled) during execution
+        //   2. initializePostBootROMState() in MemoryBus (if boot ROM is disabled)
+        // This ensures correct boot ROM behavior when enabled.
     }
 
     PPU::~PPU()
@@ -85,14 +77,14 @@ namespace ppu
     // --- Core step/state machine (inchangé) ---
     void PPU::step(uint8_t cycles)
     {
+        // When LCD is disabled (LCDC bit 7 = 0), reset PPU state
+        // This must happen even during boot ROM execution
         if (UNLIKELY((readLCDC() & LCDC_LCD_ENABLE) == 0)) {
-            if (!mmu.isBootEnabled()) {
-                mode = Mode::HBLANK;
-                mode_cycles = 0;
-                updateLY(0);
-                // Check STAT interrupt after state changes
-                triggerSTATIfNeeded();
-            }
+            mode = Mode::HBLANK;
+            mode_cycles = 0;
+            updateLY(0);
+            // Check STAT interrupt after state changes
+            triggerSTATIfNeeded();
             return;
         }
 
