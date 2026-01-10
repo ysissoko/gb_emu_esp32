@@ -1,0 +1,82 @@
+# Refactor Plan – GB → GBC Evolution
+
+## Phase 1 – Architecture Cleanup
+Goal: Make GBC features pluggable without breaking DMG
+
+### Actions
+- Split emulator into subsystems:
+  - cpu/
+  - ppu/
+  - mmu/
+  - timer/
+  - apu/
+  - platform/ (ESP32-specific)
+- Introduce `EmulatorMode { DMG, CGB }`
+- All subsystems receive mode flag
+
+## Phase 2 – Memory Refactor
+Goal: Enable GBC banking cleanly
+
+### Actions
+- Replace single WRAM array with:
+  - wram_bank0[4KB]
+  - wram_banks[7][4KB]
+- Replace VRAM with:
+  - vram_banks[2][8KB]
+- MMU routes reads/writes based on VBK / SVBK
+
+## Phase 3 – PPU GBC Support
+Goal: Color rendering without breaking DMG
+
+### Actions
+- Add BG/OBJ palette RAM:
+  - BGPI/BGPD
+  - OBPI/OBPD
+- Decode tile attributes:
+  - Palette number
+  - VRAM bank
+  - H/V flip
+  - BG priority
+- Maintain DMG fast-path rendering
+
+## Phase 4 – Speed Switching
+Goal: Support double-speed safely
+
+### Actions
+- Implement KEY1 register
+- CPU cycles *= 2 in double-speed
+- Timer and PPU adapt automatically
+- STOP instruction triggers speed toggle
+
+## Phase 5 – DMA / HDMA
+Goal: Pokémon Crystal compatibility
+
+### Actions
+- Implement HDMA state machine
+- HBlank DMA during mode 0
+- CPU stalls during General DMA
+
+## Phase 6 – Boot ROM
+Goal: Accurate startup for all games
+
+### Actions
+- Add CGB boot ROM
+- Auto-detect cartridge type
+- Correct register initialization
+
+## Phase 7 – Performance Pass (ESP32-S3)
+Goal: 60 FPS stable
+
+### Actions
+- Mark hot functions IRAM_ATTR
+- SPI DMA for ST7789
+- Avoid per-pixel SPI writes
+- Framebuffer double-buffering
+
+## Phase 8 – Validation
+Goal: Regression-free
+
+### Actions
+- Automated ROM test suite
+- Save-state stress test
+- Long Pokémon play session (10+ min)
