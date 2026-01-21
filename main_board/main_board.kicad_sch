@@ -2841,7 +2841,7 @@
   (symbol (lib_id "Device:LED") (at 185.42 41.91 90) (unit 1)
     (in_bom yes) (on_board yes) (dnp no) (fields_autoplaced)
     (uuid 8039ef3d-7a1f-46ee-bef4-d384fae38eda)
-    (property "Reference" "ON/OFF" (at 189.23 42.2275 90)
+    (property "Reference" "ON/OFF1" (at 189.23 42.2275 90)
       (effects (font (size 1.27 1.27)) (justify right))
     )
     (property "Value" "LED" (at 189.23 44.7675 90)
@@ -2858,7 +2858,7 @@
     (instances
       (project "main_board"
         (path "/1dcb963c-2272-4e5a-a1ca-affe3e5a9836"
-          (reference "ON/OFF") (unit 1)
+          (reference "ON/OFF1") (unit 1)
         )
       )
     )
