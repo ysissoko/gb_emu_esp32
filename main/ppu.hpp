@@ -136,7 +136,7 @@ namespace ppu
         uint16_t mode_cycles;
         uint8_t ly;  // Current scanline (0-153)
         bool frame_ready;
-        bool should_render_frame = false;  // Control frame rendering for skipping, disabled initially
+        bool should_render_frame{false};  // Control frame rendering for skipping, disabled initially
         uint8_t window_line_counter;  // Internal window line counter
         bool prev_stat_line;  // Previous STAT interrupt line state (for STAT blocking)
 

@@ -11,15 +11,15 @@
 namespace display
 {
 
-    constexpr uint16_t SCREEN_WIDTH = 240;
-    constexpr uint16_t SCREEN_HEIGHT = 320;
+    constexpr uint16_t SCREEN_WIDTH = 240; // LCD screen width in pixels
+    constexpr uint16_t SCREEN_HEIGHT = 240; // LCD screen height in pixels
 
-    constexpr int LCD_WIDTH = 160;
-    constexpr int LCD_HEIGHT = 144;
-    constexpr int SPI_CLK_FREQ_MHZ = 80; // clock in mhz
+    constexpr int LCD_WIDTH = 160; // The original gameboy screen width
+    constexpr int LCD_HEIGHT = 144; // The original gameboy screen height
+    constexpr int SPI_CLK_FREQ_MHZ = 80; // SPI clock set in mhz
 
     static constexpr int CHUNK_LINES = 8;
-    static constexpr int CHUNK_PIXELS = SCREEN_WIDTH * CHUNK_LINES;  // Use SCREEN_WIDTH (240) instead of LCD_WIDTH (160)
+    static constexpr int CHUNK_PIXELS = SCREEN_WIDTH * CHUNK_LINES;
 
     // Pixel color (Game Boy has 4 shades of gray)
     enum class Color : uint8_t
@@ -36,8 +36,17 @@ namespace display
         ~LCDDisplay() = default;
         esp_err_t initialize();
 
-        // Wait for DMA transfer to complete
+        // Wait for DMA transfer to complete. Will block if a transfer is ongoing using a semaphore.
         void waitForTransfer();
+        /**
+         * @brief Render a frame to the LCD in RGB565 format.
+         * 
+         * @param buffer the buffer containing the RGB565 pixel data
+         * @param width the width of the frame
+         * @param height the height of the frame
+         * @param offset_x the x offset on the LCD to start rendering
+         * @param offset_y the y offset on the LCD to start rendering
+         */
         void renderFrameRGB565(const uint16_t* buffer, int width, int height, int offset_x = 0, int offset_y = 0);
                 
     private:
@@ -45,6 +54,7 @@ namespace display
         int frame_time_index{0};
 
     private:
+        // LCD panel and IO handles
         esp_lcd_panel_handle_t panel{nullptr};
         esp_lcd_panel_io_handle_t io_handle{nullptr};
 
