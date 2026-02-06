@@ -37,12 +37,14 @@ namespace emulator
 
         // Clear entire screen to black (240x320) for game display
         static uint16_t black_buffer[display::SCREEN_WIDTH * 40]; // 40 lines at a time
-        for (int i = 0; i < display::SCREEN_WIDTH * 40; i++) {
+        for (int i = 0; i < display::SCREEN_WIDTH * 40; i++)
+        {
             black_buffer[i] = 0x0000; // Black
         }
 
         // Fill screen in chunks
-        for (int y = 0; y < display::SCREEN_HEIGHT; y += 40) {
+        for (int y = 0; y < display::SCREEN_HEIGHT; y += 40)
+        {
             int chunk_height = (y + 40 > display::SCREEN_HEIGHT) ? (display::SCREEN_HEIGHT - y) : 40;
             lcd_display->renderFrameRGB565(black_buffer, display::SCREEN_WIDTH, chunk_height, 0, y);
         }
@@ -73,16 +75,16 @@ namespace emulator
             // Show menu and let user select ROM
             std::string rom_path = emulator->showMenuAndSelectROM();
 
-                if (!rom_path.empty())
-                {
-                    ESP_LOGI(TAG, "Loading ROM: %s", rom_path.c_str());
-                    emulator->loadROMFile(rom_path);
-                    emulator->rom_loaded = true;
-                    emulator->ppu->setShouldRender(true);  // Enable rendering now that game is loaded
-                    emulator->app_state = AppState::RUNNING_GAME;
-                    ESP_LOGI(TAG, "ROM loaded, switching to RUNNING_GAME state");
-                    ESP_LOGI(TAG, "Free heap after menu destroyed: %lu bytes", esp_get_free_heap_size());
-                }
+            if (!rom_path.empty())
+            {
+                ESP_LOGI(TAG, "Loading ROM: %s", rom_path.c_str());
+                emulator->loadROMFile(rom_path);
+                emulator->rom_loaded = true;
+                emulator->ppu->setShouldRender(true); // Enable rendering now that game is loaded
+                emulator->app_state = AppState::RUNNING_GAME;
+                ESP_LOGI(TAG, "ROM loaded, switching to RUNNING_GAME state");
+                ESP_LOGI(TAG, "Free heap after menu destroyed: %lu bytes", esp_get_free_heap_size());
+            }
             else
             {
                 ESP_LOGE(TAG, "No ROM selected, halting");
@@ -109,11 +111,11 @@ namespace emulator
 
         // Save system: auto-save every 30 seconds if dirty
         int64_t last_autosave_time = esp_timer_get_time();
-        constexpr int64_t AUTOSAVE_INTERVAL_US = 30 * 1000000;  // 30 seconds
+        constexpr int64_t AUTOSAVE_INTERVAL_US = 30 * 1000000; // 30 seconds
 
         // Manual save: SELECT+START held for 2 seconds
         int select_start_hold_frames = 0;
-        constexpr int SAVE_HOLD_FRAMES = 120;  // ~2 seconds at 60 FPS
+        constexpr int SAVE_HOLD_FRAMES = 120; // ~2 seconds at 60 FPS
         bool save_triggered = false;
 
         while (true)
@@ -122,7 +124,7 @@ namespace emulator
 
             // Frame skipping: lag-based decision (only skip rendering, not emulation)
             // TEMPORARY: Disable frame skipping for debugging
-            bool should_skip = false;  // (emulator->lag_us > FRAME_US / 2);
+            bool should_skip = false; // (emulator->lag_us > FRAME_US / 2);
 
             // Set PPU rendering flag based on skip decision (affects render only!)
             emulator->ppu->setShouldRender(!should_skip);
@@ -175,10 +177,7 @@ namespace emulator
             emulator->lag_us += emu_time - FRAME_US;
 
             // Clamp lag to prevent excessive accumulation
-            if (emulator->lag_us < -FRAME_US)
-                emulator->lag_us = -FRAME_US;
-            if (emulator->lag_us > 2 * FRAME_US)
-                emulator->lag_us = 2 * FRAME_US;
+            emulator->lag_us = std::clamp(emulator->lag_us, -FRAME_US, 2 * FRAME_US);
 
             // Stats
             frame_count++;
@@ -204,7 +203,7 @@ namespace emulator
             if (sleep_us > 1000)
                 vTaskDelay(pdMS_TO_TICKS(sleep_us / 1000));
             else
-                vTaskDelay(1);  // ALWAYS yield at least 1 tick to let IDLE task run
+                vTaskDelay(1); // ALWAYS yield at least 1 tick to let IDLE task run and avoid blocking other tasks and watchdog resets
         }
     }
 
@@ -363,7 +362,7 @@ namespace emulator
         // Load ROM into memory bus (MBC support now enabled)
         loadROM(rom_buffer, rom_size);
 
-        // Set ROM path for save management
+        // Set ROM path for save management to create save file alongside ROM
         mmu->setROMPath(rom_path);
 
         // Load SRAM from save file (if cartridge has battery)

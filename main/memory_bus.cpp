@@ -717,21 +717,6 @@ namespace memory
             return;
 
         sram_dirty_counter++;
-
-        // DISABLED: Auto-save causes Cache error / MMU fault during SPI operations
-        // Save will be done manually or on game exit
-        // TODO: Implement async save in dedicated task on Core 0
-        #if 0
-        if (sram_dirty_counter >= 300)
-        {
-            sram_dirty_counter = 0;
-            esp_err_t ret = saveSRAM();
-            if (ret == ESP_OK)
-            {
-                ESP_LOGD("MemoryBus", "Auto-saved SRAM");
-            }
-        }
-        #endif
     }
 
     void MemoryBus::updateRTC()
