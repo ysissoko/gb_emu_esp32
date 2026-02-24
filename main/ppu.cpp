@@ -285,14 +285,20 @@ namespace ppu
         palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
         palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
 
-        // 20 tiles = 160 pixels
-        for (int tile = 0; tile < 20; ++tile)
-        {
-            const int x_base = tile * 8;
-            const uint8_t x_pos = static_cast<uint8_t>(x_base + ctx.scx);
+        // Split SCX into coarse (tile index) and fine (sub-tile pixel offset).
+        // When fine_x != 0 the first tile is partial, requiring up to 21 tiles
+        // to fill 160 screen pixels. Without this split, (px0+i)&0x7 would
+        // wrap back into the same BG tile instead of advancing to the next one,
+        // producing a horizontal stripe artifact during non-tile-aligned scroll.
+        const uint8_t fine_x   = ctx.scx & 0x07;  // pixel offset in first tile (0-7)
+        const uint8_t coarse_x = ctx.scx >> 3;    // starting tile index in BG map (0-31)
+        const int num_tiles = 20 + (fine_x ? 1 : 0);
 
-            const uint8_t tile_x = x_pos >> 3;
-            const uint8_t px0 = x_pos & 0x7;
+        int screen_x = 0;
+        for (int tile = 0; tile < num_tiles && screen_x < display::LCD_WIDTH; ++tile)
+        {
+            // BG map is 32 tiles wide; wrap with & 0x1F
+            const uint8_t tile_x = (coarse_x + tile) & 0x1F;
 
             const uint8_t tile_index =
                 vram[tile_row_base - memory::VRAM_START + tile_x];
@@ -307,7 +313,7 @@ namespace ppu
             const uint8_t b1 = vram[row_addr - memory::VRAM_START];
             const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
 
-            // Decode entire tile row at once (8 pixels)
+            // Decode tile row (8 pixels)
             uint16_t tile_row[8];
             for (int i = 0; i < 8; ++i)
             {
@@ -318,15 +324,11 @@ namespace ppu
                 tile_row[i] = palette_lut[color];
             }
 
-            // Write pixels (handle scrolling offset)
-            for (int i = 0; i < 8; ++i)
+            // First tile starts at fine_x; all subsequent tiles start at pixel 0
+            const int start_px = (tile == 0) ? fine_x : 0;
+            for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
             {
-                const int screen_x = x_base + i;
-                if (UNLIKELY(screen_x >= display::LCD_WIDTH))
-                    break;
-
-                const int tile_pixel = (px0 + i) & 0x7;
-                framebuffer[fb_row + screen_x] = tile_row[tile_pixel];
+                framebuffer[fb_row + screen_x++] = tile_row[px];
             }
         }
     }
