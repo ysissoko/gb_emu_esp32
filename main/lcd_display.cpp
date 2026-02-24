@@ -56,7 +56,9 @@ namespace display
         // Configure backlight (BLK)
         gpio_config_t bk_gpio_config = {};
         bk_gpio_config.mode = GPIO_MODE_OUTPUT;
-        bk_gpio_config.pin_bit_mask = 1ULL << 48;
+        bk_gpio_config.pin_bit_mask = 1ULL << 12; // LCD_BL
+        bk_gpio_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        bk_gpio_config.pull_up_en = GPIO_PULLUP_DISABLE;
         gpio_config(&bk_gpio_config);
         gpio_set_level(gpio::LCD_BL, 1); // Turn on backlight
 
