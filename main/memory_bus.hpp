@@ -168,6 +168,13 @@ namespace memory
             return oam[addr - OAM_START];
         }
 
+        bool isCGBMode() const { return cgb_mode; }
+
+        inline const uint8_t* getVRAMBank1() const { return vram_bank1; }
+        inline const uint8_t* getBGPaletteRAM() const { return bg_palette_ram; }
+        inline const uint8_t* getOBJPaletteRAM() const { return obj_palette_ram; }
+        inline uint8_t getVRAMBankIndex() const { return vram_bank; }
+
     private:
         // ROM - 32KB (0x0000-0x7FFF) base + extended banks in PSRAM
         std::array<uint8_t, 0x8000> rom;
@@ -255,5 +262,22 @@ namespace memory
 
         // APU for audio (stub - no sound output)
         std::unique_ptr<apu::APU> apu{nullptr};
+
+        // CGB mode flag
+        bool cgb_mode{false};
+
+        // CGB VRAM bank 1 (8KB, PSRAM)
+        uint8_t* vram_bank1{nullptr};
+        uint8_t vram_bank{0};   // Current VRAM bank (0 or 1), VBK register
+
+        // CGB WRAM extra banks 2-7 (6 × 4KB = 24KB, PSRAM)
+        uint8_t* wram_extra{nullptr};
+        uint8_t wram_bank{1};   // Active WRAM bank for 0xD000-0xDFFF (1-7)
+
+        // CGB color palette RAM
+        uint8_t bg_palette_ram[64]{};   // 8 palettes × 4 colors × 2 bytes
+        uint8_t obj_palette_ram[64]{};  // 8 palettes × 4 colors × 2 bytes
+        uint8_t bg_palette_index{0};    // BGPI register (bit 7 = auto-increment)
+        uint8_t obj_palette_index{0};   // OBPI register (bit 7 = auto-increment)
     };
 }

@@ -48,6 +48,26 @@ namespace memory
             memset(external_ram, 0x00, EXTERNAL_RAM_SIZE);
         }
 
+        // CGB VRAM bank 1 (8KB)
+        vram_bank1 = static_cast<uint8_t*>(
+            heap_caps_malloc(0x2000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (vram_bank1) {
+            memset(vram_bank1, 0x00, 0x2000);
+            ESP_LOGI("MemoryBus", "Allocated CGB VRAM bank 1 (8KB) in PSRAM");
+        } else {
+            ESP_LOGE("MemoryBus", "Failed to allocate CGB VRAM bank 1!");
+        }
+
+        // CGB WRAM extra banks 2-7 (6 × 4KB = 24KB)
+        wram_extra = static_cast<uint8_t*>(
+            heap_caps_malloc(6 * 0x1000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (wram_extra) {
+            memset(wram_extra, 0x00, 6 * 0x1000);
+            ESP_LOGI("MemoryBus", "Allocated CGB WRAM extra banks 2-7 (24KB) in PSRAM");
+        } else {
+            ESP_LOGE("MemoryBus", "Failed to allocate CGB WRAM extra banks!");
+        }
+
         // Initialize I/O registers to DMG post-boot ROM state (boot ROM disabled)
         initializePostBootROMState();
 
@@ -72,6 +92,8 @@ namespace memory
             heap_caps_free(external_ram);
             external_ram = nullptr;
         }
+        if (vram_bank1) { heap_caps_free(vram_bank1); vram_bank1 = nullptr; }
+        if (wram_extra) { heap_caps_free(wram_extra); wram_extra = nullptr; }
     }
 
     void MemoryBus::initializePostBootROMState()
@@ -197,6 +219,9 @@ namespace memory
 
             case 0x8: case 0x9:
                 // Video RAM (0x8000-0x9FFF)
+                if (cgb_mode && vram_bank == 1 && vram_bank1) {
+                    return vram_bank1[address - VRAM_START];
+                }
                 return vram[address - VRAM_START];
 
             case 0xA: case 0xB:
@@ -247,6 +272,16 @@ namespace memory
 
             case 0xC: case 0xD:
                 // Work RAM (0xC000-0xDFFF)
+                if (cgb_mode && address >= 0xD000) {
+                    // CGB: 0xD000-0xDFFF = switchable bank (wram_bank 1-7)
+                    if (wram_bank == 1) {
+                        return wram[address - WRAM_START];  // bank 1 = wram[0x1000-0x1FFF]
+                    } else if (wram_extra) {
+                        size_t offset = (wram_bank - 2) * 0x1000 + (address - 0xD000);
+                        return wram_extra[offset];
+                    }
+                    return 0xFF;
+                }
                 return wram[address - WRAM_START];
 
             case 0xE:
@@ -296,6 +331,39 @@ namespace memory
                         // APU registers (0xFF10-0xFF3F)
                         return apu->read(address);
                     }
+                    else if (address == 0xFF4F) {
+                        // VBK: VRAM bank (CGB only), upper bits always 1
+                        return cgb_mode ? (vram_bank | 0xFE) : 0xFF;
+                    }
+                    else if (address == 0xFF4D) {
+                        // KEY1: speed switch register (CGB only)
+                        // Bit 7 = current speed (0=normal, 1=double), bit 0 = switch armed
+                        return cgb_mode ? io_registers[0x4D] : 0xFF;
+                    }
+                    else if (address == 0xFF68) {
+                        // BGPI: BG palette index (CGB only)
+                        return cgb_mode ? bg_palette_index : 0xFF;
+                    }
+                    else if (address == 0xFF69) {
+                        // BGPD: BG palette data (CGB only)
+                        if (!cgb_mode) return 0xFF;
+                        uint8_t idx = bg_palette_index & 0x3F;
+                        return bg_palette_ram[idx];
+                    }
+                    else if (address == 0xFF6A) {
+                        // OBPI: OBJ palette index (CGB only)
+                        return cgb_mode ? obj_palette_index : 0xFF;
+                    }
+                    else if (address == 0xFF6B) {
+                        // OBPD: OBJ palette data (CGB only)
+                        if (!cgb_mode) return 0xFF;
+                        uint8_t idx = obj_palette_index & 0x3F;
+                        return obj_palette_ram[idx];
+                    }
+                    else if (address == 0xFF70) {
+                        // SVBK: WRAM bank (CGB only)
+                        return cgb_mode ? (wram_bank | 0xF8) : 0xFF;
+                    }
                     else return io_registers[address - IO_REGISTERS_START];
                 }
                 else if (address < 0xFFFF) {
@@ -316,6 +384,9 @@ namespace memory
     {
         // Disable boot ROM when writing to 0xFF50 (ignored since boot ROM is disabled)
         if (address == 0xFF50) {
+            bootEnabled = false;
+            // When boot ROM finishes, inform PPU of CGB mode
+            if (ppu) ppu->setCGBMode(cgb_mode);
             return;
         }
 
@@ -407,7 +478,11 @@ namespace memory
 
             case 0x8: case 0x9:
                 // Video RAM (0x8000-0x9FFF)
-                vram[address - VRAM_START] = value;
+                if (cgb_mode && vram_bank == 1 && vram_bank1) {
+                    vram_bank1[address - VRAM_START] = value;
+                } else {
+                    vram[address - VRAM_START] = value;
+                }
                 return;
 
             case 0xA: case 0xB:
@@ -452,7 +527,16 @@ namespace memory
 
             case 0xC: case 0xD:
                 // Work RAM (0xC000-0xDFFF)
-                wram[address - WRAM_START] = value;
+                if (cgb_mode && address >= 0xD000) {
+                    if (wram_bank == 1) {
+                        wram[address - WRAM_START] = value;
+                    } else if (wram_extra) {
+                        size_t offset = (wram_bank - 2) * 0x1000 + (address - 0xD000);
+                        wram_extra[offset] = value;
+                    }
+                } else {
+                    wram[address - WRAM_START] = value;
+                }
                 return;
 
             case 0xE:
@@ -504,6 +588,71 @@ namespace memory
                     else if (address >= 0xFF10 && address <= 0xFF3F) {
                         // APU registers (0xFF10-0xFF3F)
                         apu->write(address, value);
+                    }
+                    else if (address == 0xFF4D && cgb_mode) {
+                        // KEY1: speed switch request (CGB only) - arm speed switch (bit 0)
+                        io_registers[0x4D] = (io_registers[0x4D] & 0x80) | (value & 0x01);
+                    }
+                    else if (address == 0xFF4F && cgb_mode) {
+                        // VBK: VRAM bank select (CGB only)
+                        vram_bank = value & 0x01;
+                        io_registers[0x4F] = vram_bank | 0xFE;
+                    }
+                    else if (address == 0xFF51 || address == 0xFF52 || address == 0xFF53 ||
+                             address == 0xFF54) {
+                        // HDMA source/dest (CGB only) - store for future HDMA implementation
+                        io_registers[address - IO_REGISTERS_START] = value;
+                    }
+                    else if (address == 0xFF55 && cgb_mode) {
+                        // HDMA5: trigger DMA (CGB only)
+                        if ((value & 0x80) == 0) {
+                            uint16_t src = ((io_registers[0x51] << 8) | io_registers[0x52]) & 0xFFF0;
+                            uint16_t dst = (((io_registers[0x53] << 8) | io_registers[0x54]) & 0x1FF0) | 0x8000;
+                            uint16_t len = ((value & 0x7F) + 1) * 16;
+                            for (uint16_t i = 0; i < len; i++) {
+                                write(dst + i, read(src + i));
+                            }
+                            io_registers[0x55] = 0xFF;  // DMA complete
+                        } else {
+                            // HBlank DMA - simplified: do it all now
+                            uint16_t src = ((io_registers[0x51] << 8) | io_registers[0x52]) & 0xFFF0;
+                            uint16_t dst = (((io_registers[0x53] << 8) | io_registers[0x54]) & 0x1FF0) | 0x8000;
+                            uint16_t len = ((value & 0x7F) + 1) * 16;
+                            for (uint16_t i = 0; i < len; i++) {
+                                write(dst + i, read(src + i));
+                            }
+                            io_registers[0x55] = 0xFF;  // DMA complete
+                        }
+                    }
+                    else if (address == 0xFF68 && cgb_mode) {
+                        // BGPI: BG palette index
+                        bg_palette_index = value;
+                    }
+                    else if (address == 0xFF69 && cgb_mode) {
+                        // BGPD: BG palette data
+                        uint8_t idx = bg_palette_index & 0x3F;
+                        bg_palette_ram[idx] = value;
+                        if (bg_palette_index & 0x80) {
+                            bg_palette_index = (bg_palette_index & 0x80) | ((idx + 1) & 0x3F);
+                        }
+                    }
+                    else if (address == 0xFF6A && cgb_mode) {
+                        // OBPI: OBJ palette index
+                        obj_palette_index = value;
+                    }
+                    else if (address == 0xFF6B && cgb_mode) {
+                        // OBPD: OBJ palette data
+                        uint8_t idx = obj_palette_index & 0x3F;
+                        obj_palette_ram[idx] = value;
+                        if (obj_palette_index & 0x80) {
+                            obj_palette_index = (obj_palette_index & 0x80) | ((idx + 1) & 0x3F);
+                        }
+                    }
+                    else if (address == 0xFF70 && cgb_mode) {
+                        // SVBK: WRAM bank select (CGB only), bits 2-0, value 0 treated as 1
+                        wram_bank = (value & 0x07);
+                        if (wram_bank == 0) wram_bank = 1;
+                        io_registers[0x70] = wram_bank;
                     }
                     else {
                         io_registers[address - IO_REGISTERS_START] = value;
@@ -568,6 +717,30 @@ namespace memory
 
              // Check if cartridge has battery-backed SRAM
              has_battery = save_manager::has_battery(cart_type);
+
+             // Detect CGB mode from header byte 0x0143
+             // 0x80 = CGB-compatible, 0xC0 = CGB-only
+             uint8_t cgb_flag = data[0x0143];
+             cgb_mode = (cgb_flag == 0x80 || cgb_flag == 0xC0);
+             ESP_LOGI("MemoryBus", "CGB mode: %s (flag=0x%02X)", cgb_mode ? "YES" : "NO", cgb_flag);
+             if (ppu) ppu->setCGBMode(cgb_mode);
+
+             // Initialize CGB-specific I/O registers to their post-boot state
+             if (cgb_mode) {
+                 io_registers[0x4D] = 0x00;  // KEY1: normal speed, no switch armed
+                 io_registers[0x4F] = 0xFE;  // VBK: bank 0 selected
+                 io_registers[0x70] = 0x01;  // SVBK: WRAM bank 1
+                 // HDMA registers: inactive
+                 io_registers[0x51] = 0xFF;
+                 io_registers[0x52] = 0xFF;
+                 io_registers[0x53] = 0xFF;
+                 io_registers[0x54] = 0xFF;
+                 io_registers[0x55] = 0xFF;
+                 // Initialize BG palette to white (CGB post-boot has white palette 0)
+                 memset(bg_palette_ram, 0xFF, sizeof(bg_palette_ram));
+                 memset(obj_palette_ram, 0xFF, sizeof(obj_palette_ram));
+                 ESP_LOGI("MemoryBus", "CGB I/O registers initialized to post-boot state");
+             }
 
              // Disable boot ROM for test ROMs (small size or specific titles)
              if (size < 0x8000) {
