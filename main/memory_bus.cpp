@@ -426,11 +426,17 @@ namespace memory
                         rom_bank = bank;
                     }
                 }
-                else if (LIKELY(mbc_type == 1 || mbc_type == 3)) {
-                    // MBC1/MBC3: 5-bit bank number (0x01-0x1F)
+                else if (mbc_type == 1) {
+                    // MBC1: 5-bit bank number (0x01-0x1F), upper bits preserved
                     uint8_t bank = value & 0x1F;
                     if (UNLIKELY(bank == 0)) bank = 1;  // Bank 0 forbidden
                     rom_bank = (rom_bank & 0xE0) | bank;
+                    rom_bank &= rom_bank_mask;  // Mask to valid banks
+                } else if (mbc_type == 3) {
+                    // MBC3: 7-bit bank number (0x01-0x7F), set directly
+                    uint8_t bank = value & 0x7F;
+                    if (UNLIKELY(bank == 0)) bank = 1;  // Bank 0 forbidden
+                    rom_bank = bank;
                     rom_bank &= rom_bank_mask;  // Mask to valid banks
                 } else if (mbc_type == 5) {
                     // MBC5: 9-bit bank number (lower 8 bits)
