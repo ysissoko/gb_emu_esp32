@@ -77,6 +77,9 @@ namespace cpu
         bool dma_in_progress{false};
         uint16_t dma_cycles_remaining{0};
 
+        // CGB double-speed mode
+        bool double_speed{false};
+
         // Debug control
         bool debug_logs_enabled{false};
         uint32_t loop_iteration_count{0};  // Track polling loop iterations
