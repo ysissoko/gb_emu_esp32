@@ -70,6 +70,17 @@ namespace ppu
         return (b << 11) | (g << 5) | r;  // Reassemble as BGR
     }
 
+    // Convert CGB 15-bit color (GBR555) to BGR565 for ST7789V
+    // CGB format: bits 14-10=B, 9-5=G, 4-0=R (little-endian 2 bytes)
+    static inline uint16_t cgb_color_to_bgr565(uint8_t lo, uint8_t hi) {
+        uint16_t color = (static_cast<uint16_t>(hi) << 8) | lo;
+        uint8_t r = (color >> 0) & 0x1F;
+        uint8_t g = (color >> 5) & 0x1F;
+        uint8_t b = (color >> 10) & 0x1F;
+        // Scale 5-bit to 5/6-bit: r,b stay 5-bit, g expands to 6-bit (×2)
+        return static_cast<uint16_t>((b << 11) | (g << 6) | r);
+    }
+
     // Cached PPU register context for scanline rendering (avoid repeated MMU reads)
     struct ScanlineContext
     {
@@ -106,6 +117,11 @@ namespace ppu
         inline void setShouldRender(bool should_render) { should_render_frame = should_render; }
         inline bool getShouldRender() const { return should_render_frame; }
 
+        void setCGBMode(bool cgb) { cgb_mode = cgb; }
+        void setVRAMBank1(const uint8_t* bank1) { vram_bank1 = bank1; }
+        void setBGPaletteRAM(const uint8_t* pal) { bg_palette_ram = pal; }
+        void setOBJPaletteRAM(const uint8_t* pal) { obj_palette_ram = pal; }
+
         // Pipeline asynchrone methods
         static void render_task(void* arg);
         void queue_frame_for_rendering();
@@ -118,6 +134,12 @@ namespace ppu
         memory::MemoryBus& mmu;
         const uint8_t* vram{nullptr};
         const uint8_t* oam{nullptr};
+
+        // CGB state
+        bool cgb_mode{false};
+        const uint8_t* vram_bank1{nullptr};
+        const uint8_t* bg_palette_ram{nullptr};
+        const uint8_t* obj_palette_ram{nullptr};
 
         // Framebuffer: Direct RGB565 (no conversion needed!)
         // Allocated in INTERNAL RAM for fast access (DMA-compatible)

@@ -257,11 +257,6 @@ namespace ppu
     {
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
 
-        // Note: On DMG (original Game Boy), LCDC bit 0 does NOT disable the background!
-        // The background is always drawn. This bit only affects sprite priority.
-        // Only on Game Boy Color can this bit disable the background completely.
-        // We emulate DMG behavior, so we always render the background.
-
         const uint16_t tile_map_base =
             (ctx.lcdc & LCDC_BG_TILE_MAP) ? 0x9C00 : 0x9800;
 
@@ -278,57 +273,103 @@ namespace ppu
         const uint16_t tile_row_base =
             tile_map_base + (tile_y * TILES_PER_ROW);
 
-        // Pre-calculate palette lookup table for this scanline
-        uint16_t palette_lut[4];
-        palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
-        palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
-        palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
-        palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
-
-        // Split SCX into coarse (tile index) and fine (sub-tile pixel offset).
-        // When fine_x != 0 the first tile is partial, requiring up to 21 tiles
-        // to fill 160 screen pixels. Without this split, (px0+i)&0x7 would
-        // wrap back into the same BG tile instead of advancing to the next one,
-        // producing a horizontal stripe artifact during non-tile-aligned scroll.
-        const uint8_t fine_x   = ctx.scx & 0x07;  // pixel offset in first tile (0-7)
-        const uint8_t coarse_x = ctx.scx >> 3;    // starting tile index in BG map (0-31)
+        const uint8_t fine_x   = ctx.scx & 0x07;
+        const uint8_t coarse_x = ctx.scx >> 3;
         const int num_tiles = 20 + (fine_x ? 1 : 0);
 
-        int screen_x = 0;
-        for (int tile = 0; tile < num_tiles && screen_x < display::LCD_WIDTH; ++tile)
-        {
-            // BG map is 32 tiles wide; wrap with & 0x1F
-            const uint8_t tile_x = (coarse_x + tile) & 0x1F;
+        if (LIKELY(!cgb_mode)) {
+            // --- DMG fast path (unchanged) ---
+            uint16_t palette_lut[4];
+            palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+            palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
+            palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
+            palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
 
-            const uint8_t tile_index =
-                vram[tile_row_base - memory::VRAM_START + tile_x];
-
-            uint16_t tile_addr;
-            if (UNLIKELY(signed_tiles))
-                tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
-            else
-                tile_addr = tile_data_base + (tile_index * 16);
-
-            const uint16_t row_addr = tile_addr + (pixel_y * 2);
-            const uint8_t b1 = vram[row_addr - memory::VRAM_START];
-            const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
-
-            // Decode tile row (8 pixels)
-            uint16_t tile_row[8];
-            for (int i = 0; i < 8; ++i)
+            int screen_x = 0;
+            for (int tile = 0; tile < num_tiles && screen_x < display::LCD_WIDTH; ++tile)
             {
-                const uint8_t bit = 7 - i;
-                const uint8_t color =
-                    ((b2 >> bit) & 1) << 1 |
-                    ((b1 >> bit) & 1);
-                tile_row[i] = palette_lut[color];
+                const uint8_t tile_x = (coarse_x + tile) & 0x1F;
+                const uint8_t tile_index =
+                    vram[tile_row_base - memory::VRAM_START + tile_x];
+
+                uint16_t tile_addr;
+                if (UNLIKELY(signed_tiles))
+                    tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
+                else
+                    tile_addr = tile_data_base + (tile_index * 16);
+
+                const uint16_t row_addr = tile_addr + (pixel_y * 2);
+                const uint8_t b1 = vram[row_addr - memory::VRAM_START];
+                const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
+
+                uint16_t tile_row[8];
+                for (int i = 0; i < 8; ++i)
+                {
+                    const uint8_t bit = 7 - i;
+                    const uint8_t color =
+                        ((b2 >> bit) & 1) << 1 |
+                        ((b1 >> bit) & 1);
+                    tile_row[i] = palette_lut[color];
+                }
+
+                const int start_px = (tile == 0) ? fine_x : 0;
+                for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
+                {
+                    framebuffer[fb_row + screen_x++] = tile_row[px];
+                }
             }
-
-            // First tile starts at fine_x; all subsequent tiles start at pixel 0
-            const int start_px = (tile == 0) ? fine_x : 0;
-            for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
+        } else {
+            // --- CGB path ---
+            int screen_x = 0;
+            for (int tile = 0; tile < num_tiles && screen_x < display::LCD_WIDTH; ++tile)
             {
-                framebuffer[fb_row + screen_x++] = tile_row[px];
+                const uint8_t tile_x = (coarse_x + tile) & 0x1F;
+                const uint16_t map_offset = tile_row_base - memory::VRAM_START + tile_x;
+
+                const uint8_t tile_index = vram[map_offset];
+                const uint8_t attrs = (vram_bank1) ? vram_bank1[map_offset] : 0;
+
+                const uint8_t palette_num = attrs & 0x07;
+                const bool use_bank1     = (attrs & 0x08) != 0;
+                const bool x_flip        = (attrs & 0x20) != 0;
+                const bool y_flip        = (attrs & 0x40) != 0;
+
+                const uint8_t effective_py = y_flip ? (7 - pixel_y) : pixel_y;
+
+                uint16_t tile_addr;
+                if (UNLIKELY(signed_tiles))
+                    tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
+                else
+                    tile_addr = tile_data_base + (tile_index * 16);
+
+                const uint16_t row_addr = tile_addr + (effective_py * 2);
+                const uint16_t vram_offset = row_addr - memory::VRAM_START;
+
+                const uint8_t* tile_vram = (use_bank1 && vram_bank1) ? vram_bank1 : vram;
+                const uint8_t b1 = tile_vram[vram_offset];
+                const uint8_t b2 = tile_vram[vram_offset + 1];
+
+                uint16_t palette_lut[4];
+                const uint8_t* pal = bg_palette_ram + palette_num * 8;
+                for (int c = 0; c < 4; ++c) {
+                    palette_lut[c] = cgb_color_to_bgr565(pal[c * 2], pal[c * 2 + 1]);
+                }
+
+                uint16_t tile_row[8];
+                for (int i = 0; i < 8; ++i)
+                {
+                    const uint8_t bit = x_flip ? i : (7 - i);
+                    const uint8_t color =
+                        ((b2 >> bit) & 1) << 1 |
+                        ((b1 >> bit) & 1);
+                    tile_row[i] = palette_lut[color];
+                }
+
+                const int start_px = (tile == 0) ? fine_x : 0;
+                for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
+                {
+                    framebuffer[fb_row + screen_x++] = tile_row[px];
+                }
             }
         }
     }
@@ -338,10 +379,6 @@ namespace ppu
         if (UNLIKELY((ctx.lcdc & LCDC_WINDOW_ENABLE) == 0))
             return;
 
-        // Window is visible if WY <= LY AND WX <= 166
-        // WX=0-6 is off-screen (WX-7 < 0), WX=7 starts at screen pixel 0
-        // WX=166 is the last valid position (166-7=159, the last screen pixel)
-        // WX >= 167 means window is completely off-screen
         if (UNLIKELY(ctx.wy > ly || ctx.wx >= 167))
             return;
 
@@ -361,58 +398,121 @@ namespace ppu
         const uint8_t tile_y = window_line_counter >> 3;
         const uint8_t pixel_y = window_line_counter & 0x7;
 
-        // Pre-calculate palette lookup table (same as background)
-        uint16_t palette_lut[4];
-        palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
-        palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
-        palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
-        palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
+        if (LIKELY(!cgb_mode)) {
+            // --- DMG fast path (unchanged) ---
+            uint16_t palette_lut[4];
+            palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+            palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
+            palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
+            palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
 
-        for (int x = std::max(0, win_x_start); x < display::LCD_WIDTH; x += 8)
-        {
-            const int win_x = x - win_x_start;
-            const uint8_t tile_x = win_x >> 3;
-            const uint8_t px0 = win_x & 0x7;
-
-            const uint16_t map_addr =
-                tile_map_base + tile_y * TILES_PER_ROW + tile_x;
-
-            const uint8_t tile_index =
-                vram[map_addr - memory::VRAM_START];
-
-            uint16_t tile_addr;
-            if (UNLIKELY(signed_tiles))
-                tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
-            else
-                tile_addr = tile_data_base + (tile_index * 16);
-
-            const uint16_t row_addr = tile_addr + pixel_y * 2;
-            const uint8_t b1 = vram[row_addr - memory::VRAM_START];
-            const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
-
-            // Decode entire tile row at once
-            uint16_t tile_row[8];
-            for (int i = 0; i < 8; ++i)
+            for (int x = std::max(0, win_x_start); x < display::LCD_WIDTH; x += 8)
             {
-                const uint8_t bit = 7 - i;
-                const uint8_t color =
-                    ((b2 >> bit) & 1) << 1 |
-                    ((b1 >> bit) & 1);
-                tile_row[i] = palette_lut[color];
+                const int win_x = x - win_x_start;
+                const uint8_t tile_x = win_x >> 3;
+                const uint8_t px0 = win_x & 0x7;
+
+                const uint16_t map_addr =
+                    tile_map_base + tile_y * TILES_PER_ROW + tile_x;
+
+                const uint8_t tile_index =
+                    vram[map_addr - memory::VRAM_START];
+
+                uint16_t tile_addr;
+                if (UNLIKELY(signed_tiles))
+                    tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
+                else
+                    tile_addr = tile_data_base + (tile_index * 16);
+
+                const uint16_t row_addr = tile_addr + pixel_y * 2;
+                const uint8_t b1 = vram[row_addr - memory::VRAM_START];
+                const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
+
+                uint16_t tile_row[8];
+                for (int i = 0; i < 8; ++i)
+                {
+                    const uint8_t bit = 7 - i;
+                    const uint8_t color =
+                        ((b2 >> bit) & 1) << 1 |
+                        ((b1 >> bit) & 1);
+                    tile_row[i] = palette_lut[color];
+                }
+
+                for (int i = 0; i < 8; ++i)
+                {
+                    const int sx = x + i;
+                    if (UNLIKELY(sx < 0 || sx >= display::LCD_WIDTH))
+                        continue;
+                    if (UNLIKELY(sx < win_x_start))
+                        continue;
+
+                    const int tile_pixel = (px0 + i) & 0x7;
+                    pixels_rendered = true;
+                    framebuffer[fb_row + sx] = tile_row[tile_pixel];
+                }
             }
-
-            // Write pixels
-            for (int i = 0; i < 8; ++i)
+        } else {
+            // --- CGB path ---
+            for (int x = std::max(0, win_x_start); x < display::LCD_WIDTH; x += 8)
             {
-                const int sx = x + i;
-                if (UNLIKELY(sx < 0 || sx >= display::LCD_WIDTH))
-                    continue;
-                if (UNLIKELY(sx < win_x_start))
-                    continue;
+                const int win_x = x - win_x_start;
+                const uint8_t tile_x = win_x >> 3;
+                const uint8_t px0 = win_x & 0x7;
 
-                const int tile_pixel = (px0 + i) & 0x7;
-                pixels_rendered = true;
-                framebuffer[fb_row + sx] = tile_row[tile_pixel];
+                const uint16_t map_addr =
+                    tile_map_base + tile_y * TILES_PER_ROW + tile_x;
+                const uint16_t map_offset = map_addr - memory::VRAM_START;
+
+                const uint8_t tile_index = vram[map_offset];
+                const uint8_t attrs = (vram_bank1) ? vram_bank1[map_offset] : 0;
+
+                const uint8_t palette_num = attrs & 0x07;
+                const bool use_bank1     = (attrs & 0x08) != 0;
+                const bool x_flip        = (attrs & 0x20) != 0;
+                const bool y_flip        = (attrs & 0x40) != 0;
+
+                const uint8_t effective_py = y_flip ? (7 - pixel_y) : pixel_y;
+
+                uint16_t tile_addr;
+                if (UNLIKELY(signed_tiles))
+                    tile_addr = tile_data_base + (static_cast<int8_t>(tile_index) * 16);
+                else
+                    tile_addr = tile_data_base + (tile_index * 16);
+
+                const uint16_t row_addr = tile_addr + effective_py * 2;
+                const uint16_t vram_offset = row_addr - memory::VRAM_START;
+                const uint8_t* tile_vram = (use_bank1 && vram_bank1) ? vram_bank1 : vram;
+                const uint8_t b1 = tile_vram[vram_offset];
+                const uint8_t b2 = tile_vram[vram_offset + 1];
+
+                const uint8_t* pal = bg_palette_ram + palette_num * 8;
+                uint16_t palette_lut[4];
+                for (int c = 0; c < 4; ++c) {
+                    palette_lut[c] = cgb_color_to_bgr565(pal[c * 2], pal[c * 2 + 1]);
+                }
+
+                uint16_t tile_row[8];
+                for (int i = 0; i < 8; ++i)
+                {
+                    const uint8_t bit = x_flip ? i : (7 - i);
+                    const uint8_t color =
+                        ((b2 >> bit) & 1) << 1 |
+                        ((b1 >> bit) & 1);
+                    tile_row[i] = palette_lut[color];
+                }
+
+                for (int i = 0; i < 8; ++i)
+                {
+                    const int sx = x + i;
+                    if (UNLIKELY(sx < 0 || sx >= display::LCD_WIDTH))
+                        continue;
+                    if (UNLIKELY(sx < win_x_start))
+                        continue;
+
+                    const int tile_pixel = (px0 + i) & 0x7;
+                    pixels_rendered = true;
+                    framebuffer[fb_row + sx] = tile_row[tile_pixel];
+                }
             }
         }
 
@@ -496,10 +596,29 @@ namespace ppu
             }
 
             const uint16_t addr = 0x8000 + tile * 16 + y_in * 2;
-            const uint8_t b1 = vram[addr - memory::VRAM_START];
-            const uint8_t b2 = vram[addr - memory::VRAM_START + 1];
+            uint8_t b1 = vram[addr - memory::VRAM_START];
+            uint8_t b2 = vram[addr - memory::VRAM_START + 1];
+
+            // CGB: bit 3 of attributes = VRAM bank
+            if (cgb_mode && (s.attributes & 0x08) && vram_bank1) {
+                const uint16_t addr_offset = addr - memory::VRAM_START;
+                b1 = vram_bank1[addr_offset];
+                b2 = vram_bank1[addr_offset + 1];
+            }
 
             const uint16_t* palette = (s.attributes & OAM_PALETTE) ? palette_lut1 : palette_lut0;
+
+            // In CGB mode, override palette with OBJ palette RAM
+            uint16_t cgb_palette_lut[4];
+            if (cgb_mode && obj_palette_ram) {
+                const uint8_t cgb_pal_num = s.attributes & 0x07;
+                const uint8_t* pal = obj_palette_ram + cgb_pal_num * 8;
+                cgb_palette_lut[0] = 0;  // transparent
+                for (int c = 1; c < 4; ++c) {
+                    cgb_palette_lut[c] = cgb_color_to_bgr565(pal[c * 2], pal[c * 2 + 1]);
+                }
+                palette = cgb_palette_lut;
+            }
             const bool has_priority = s.attributes & OAM_PRIORITY;
             const bool x_flip = s.attributes & OAM_X_FLIP;
 
