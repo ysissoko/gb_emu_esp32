@@ -266,6 +266,11 @@ namespace emulator
         mmu->setPPU(ppu.get());
         ESP_LOGI(TAG, "PPU linked to MemoryBus for mode checks");
 
+        // Link CGB resources to PPU (safe even if not CGB - pointers will be null-checked)
+        ppu->setVRAMBank1(mmu->getVRAMBank1());
+        ppu->setBGPaletteRAM(mmu->getBGPaletteRAM());
+        ppu->setOBJPaletteRAM(mmu->getOBJPaletteRAM());
+
         ESP_LOGI(TAG, "Creating CPU...");
         cpu = std::make_unique<cpu::CPU>(*mmu, *ppu);
 
@@ -361,6 +366,11 @@ namespace emulator
 
         // Load ROM into memory bus (MBC support now enabled)
         loadROM(rom_buffer, rom_size);
+
+        // Re-initialize CPU registers now that cgb_mode is known from ROM header
+        // CGB games need A=0x11; DMG games need A=0x01
+        cpu->initializePostBootROMState();
+        ESP_LOGI(TAG, "CPU re-initialized for %s mode", mmu->isCGBMode() ? "CGB" : "DMG");
 
         // Set ROM path for save management to create save file alongside ROM
         mmu->setROMPath(rom_path);
