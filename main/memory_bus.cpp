@@ -364,6 +364,9 @@ namespace memory
                         // SVBK: WRAM bank (CGB only)
                         return cgb_mode ? (wram_bank | 0xF8) : 0xFF;
                     }
+                    else if (address == 0xFF55) {
+                        return cgb_mode ? io_registers[0x55] : 0xFF;
+                    }
                     else return io_registers[address - IO_REGISTERS_START];
                 }
                 else if (address < 0xFFFF) {
@@ -604,24 +607,37 @@ namespace memory
                         io_registers[address - IO_REGISTERS_START] = value;
                     }
                     else if (address == 0xFF55 && cgb_mode) {
-                        // HDMA5: trigger DMA (CGB only)
+                        uint16_t src = ((io_registers[0x51] << 8) | (io_registers[0x52] & 0xF0));
+                        uint16_t dst = (((io_registers[0x53] & 0x1F) << 8) | (io_registers[0x54] & 0xF0)) | 0x8000;
+                        uint8_t blocks = value & 0x7F;  // Number of 16-byte blocks minus 1
+
                         if ((value & 0x80) == 0) {
-                            uint16_t src = ((io_registers[0x51] << 8) | io_registers[0x52]) & 0xFFF0;
-                            uint16_t dst = (((io_registers[0x53] << 8) | io_registers[0x54]) & 0x1FF0) | 0x8000;
-                            uint16_t len = ((value & 0x7F) + 1) * 16;
+                            // General Purpose DMA: terminate any active HBlank DMA, then copy all at once
+                            if (hdma_active) {
+                                hdma_active = false;
+                                // FF55 bit 7=1 means "inactive"; lower 7 bits = remaining blocks
+                                io_registers[0x55] = 0x80 | hdma_remaining;
+                                return;
+                            }
+                            // Copy (blocks+1)*16 bytes immediately
+                            uint16_t len = (static_cast<uint16_t>(blocks) + 1) * 16;
                             for (uint16_t i = 0; i < len; i++) {
                                 write(dst + i, read(src + i));
                             }
                             io_registers[0x55] = 0xFF;  // DMA complete
+
+                            // Stall CPU for General DMA duration: 8 M-cycles per 16-byte block
+                            if (cpu) {
+                                uint16_t stall_cycles = (static_cast<uint16_t>(blocks) + 1) * 8;
+                                cpu->startGeneralDMAStall(stall_cycles);
+                            }
                         } else {
-                            // HBlank DMA - simplified: do it all now
-                            uint16_t src = ((io_registers[0x51] << 8) | io_registers[0x52]) & 0xFFF0;
-                            uint16_t dst = (((io_registers[0x53] << 8) | io_registers[0x54]) & 0x1FF0) | 0x8000;
-                            uint16_t len = ((value & 0x7F) + 1) * 16;
-                            for (uint16_t i = 0; i < len; i++) {
-                                write(dst + i, read(src + i));
-                            }
-                            io_registers[0x55] = 0xFF;  // DMA complete
+                            // HBlank DMA: arm state machine
+                            hdma_active = true;
+                            hdma_src = src;
+                            hdma_dst = dst;
+                            hdma_remaining = blocks;
+                            io_registers[0x55] = blocks;  // Remaining blocks (bit 7 = 0 = active)
                         }
                     }
                     else if (address == 0xFF68 && cgb_mode) {
@@ -649,10 +665,10 @@ namespace memory
                         }
                     }
                     else if (address == 0xFF70 && cgb_mode) {
-                        // SVBK: WRAM bank select (CGB only), bits 2-0, value 0 treated as 1
-                        wram_bank = (value & 0x07);
+                        // SVBK: WRAM bank select (CGB only), bits 2-0, value 0 treated as bank 1
+                        io_registers[0x70] = value & 0x07;  // store raw written value
+                        wram_bank = io_registers[0x70];
                         if (wram_bank == 0) wram_bank = 1;
-                        io_registers[0x70] = wram_bank;
                     }
                     else {
                         io_registers[address - IO_REGISTERS_START] = value;
@@ -727,7 +743,7 @@ namespace memory
 
              // Initialize CGB-specific I/O registers to their post-boot state
              if (cgb_mode) {
-                 io_registers[0x4D] = 0x00;  // KEY1: normal speed, no switch armed
+                 io_registers[0x4D] = 0x7E;  // KEY1: normal speed, bits 6-1 unused = 1
                  io_registers[0x4F] = 0xFE;  // VBK: bank 0 selected
                  io_registers[0x70] = 0x01;  // SVBK: WRAM bank 1
                  // HDMA registers: inactive
@@ -832,6 +848,10 @@ namespace memory
         }
     }
 
+    void MemoryBus::resetDIV()
+    {
+        if (timer) timer->writeDIV(0);
+    }
     std::string MemoryBus::getSerialDebugOutput() const
     {
         if (serial)
@@ -890,6 +910,28 @@ namespace memory
             return;
 
         sram_dirty_counter++;
+    }
+
+    void MemoryBus::hdmaHBlankStep()
+    {
+        if (!hdma_active || !cgb_mode)
+            return;
+
+        // Copy 16 bytes from hdma_src to hdma_dst
+        for (uint8_t i = 0; i < 16; i++) {
+            write(hdma_dst + i, read(hdma_src + i));
+        }
+        hdma_src += 16;
+        hdma_dst += 16;
+
+        if (hdma_remaining == 0) {
+            // All blocks transferred
+            hdma_active = false;
+            io_registers[0x55] = 0xFF;  // Bit 7 = 1 means inactive/done
+        } else {
+            hdma_remaining--;
+            io_registers[0x55] = hdma_remaining;  // Remaining blocks, bit 7 = 0 (active)
+        }
     }
 
     void MemoryBus::updateRTC()

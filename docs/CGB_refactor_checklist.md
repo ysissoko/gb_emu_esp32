@@ -6,7 +6,7 @@
 - [x] Double-speed mode (KEY1 register)
 - [x] STOP behavior differs in GBC mode (STOP + KEY1 triggers speed switch; otherwise halts)
 - [x] Speed switch handling (STOP + KEY1)
-- [ ] HALT + interrupt edge cases (IME=0)
+- [x] HALT + interrupt edge cases (IME=0) — HALT bug implemented (opcode read twice)
 
 ## 2. Boot ROM
 - [x] DMG boot ROM implemented
@@ -34,15 +34,15 @@
 
 ## 5. DMA
 - [x] OAM DMA (FF46)
-- [ ] GBC HDMA (HBlank DMA) — proper per-HBlank state machine not yet implemented
-- [x] GBC General DMA (FF55, bit7=0 — immediate copy)
-- [ ] CPU stall during General/HBlank DMA
+- [x] GBC HDMA (HBlank DMA) — proper per-HBlank 16-byte state machine
+- [x] GBC General DMA (FF55 bit7=0 — immediate copy with CPU stall)
+- [x] CPU stall during General DMA (startGeneralDMAStall)
 
 ## 6. Timer
 - [x] Cycle-accurate DIV/TIMA
 - [x] Correct TAC frequencies
 - [x] TIMA overflow delay
-- [x] Double-speed impact on timer (timer receives half cycles in double-speed mode)
+- [x] Double-speed impact on timer (timer gets full CPU cycles; PPU gets half)
 
 ## 7. Interrupts
 - [x] IF/IE behavior correct
@@ -56,21 +56,21 @@
 - [ ] GBC compatibility verified (requires hardware testing)
 
 ## 9. APU (Audio)
-- [ ] Stub reads return correct values
-- [ ] Registers readable/writable without crashing
+- [x] Stub reads return correct open-bus values (Pan Docs masks)
+- [x] Registers readable/writable without crashing
 - [ ] (Optional) Audio generation later
 
 ## 10. Save System
 - [x] SRAM persistence
 - [x] Battery-backed saves
-- [ ] RTC latch edge cases (MBC3)
+- [x] RTC halt bit (day register bit 6 stops counting) and day carry (bit 7)
 - [ ] No save access during DMA
 
 ## 11. Performance (ESP32-S3)
 - [x] Frame queue decoupled
 - [x] PPU runs per-cycle, not per-frame
-- [x] GBC double-speed implemented (2× CPU cycles/frame, half cycles to PPU/timer)
-- [ ] IRAM hot paths (CPU, PPU inner loops)
+- [x] GBC double-speed implemented (2× CPU cycles/frame, half cycles to PPU)
+- [x] IRAM_ATTR on PPU CGB rendering hot paths (renderBackground/Window/Sprites)
 - [ ] SPI DMA for LCD
 
 ## 12. Validation

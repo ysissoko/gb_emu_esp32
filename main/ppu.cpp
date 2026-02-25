@@ -209,6 +209,11 @@ namespace ppu
 
         // Trigger STAT interrupt immediately if needed
         triggerSTATIfNeeded();
+
+        // CGB: step HBlank DMA when entering HBlank
+        if (new_mode == Mode::HBLANK) {
+            mmu.hdmaHBlankStep();
+        }
     }
 
     void PPU::updateLY(uint8_t new_ly)
@@ -278,7 +283,15 @@ namespace ppu
         const int num_tiles = 20 + (fine_x ? 1 : 0);
 
         if (LIKELY(!cgb_mode)) {
-            // --- DMG fast path (unchanged) ---
+            // DMG: LCDC.0=0 disables BG and Window → fill line with BGP color 0 (white)
+            if (UNLIKELY(!(ctx.lcdc & LCDC_BG_WINDOW_ENABLE))) {
+                const uint16_t white = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+                uint16_t* row = framebuffer + fb_row;
+                for (int x = 0; x < display::LCD_WIDTH; ++x) row[x] = white;
+                return;
+            }
+
+            // --- DMG fast path ---
             uint16_t palette_lut[4];
             palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
             palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
@@ -356,6 +369,8 @@ namespace ppu
                 }
 
                 uint16_t tile_row[8];
+                uint8_t  tile_colors[8];
+                const bool bg_prio = (attrs & 0x80) != 0;
                 for (int i = 0; i < 8; ++i)
                 {
                     const uint8_t bit = x_flip ? i : (7 - i);
@@ -363,12 +378,16 @@ namespace ppu
                         ((b2 >> bit) & 1) << 1 |
                         ((b1 >> bit) & 1);
                     tile_row[i] = palette_lut[color];
+                    tile_colors[i] = color;
                 }
 
                 const int start_px = (tile == 0) ? fine_x : 0;
                 for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
                 {
-                    framebuffer[fb_row + screen_x++] = tile_row[px];
+                    framebuffer[fb_row + screen_x] = tile_row[px];
+                    bg_color_index[screen_x]   = tile_colors[px];
+                    bg_tile_priority[screen_x] = bg_prio;
+                    ++screen_x;
                 }
             }
         }
@@ -399,7 +418,10 @@ namespace ppu
         const uint8_t pixel_y = window_line_counter & 0x7;
 
         if (LIKELY(!cgb_mode)) {
-            // --- DMG fast path (unchanged) ---
+            // DMG: LCDC.0=0 also disables Window (renderBackground already filled the line)
+            if (UNLIKELY(!(ctx.lcdc & LCDC_BG_WINDOW_ENABLE))) return;
+
+            // --- DMG fast path ---
             uint16_t palette_lut[4];
             palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
             palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
@@ -492,6 +514,8 @@ namespace ppu
                 }
 
                 uint16_t tile_row[8];
+                uint8_t  tile_colors[8];
+                const bool bg_prio = (attrs & 0x80) != 0;
                 for (int i = 0; i < 8; ++i)
                 {
                     const uint8_t bit = x_flip ? i : (7 - i);
@@ -499,6 +523,7 @@ namespace ppu
                         ((b2 >> bit) & 1) << 1 |
                         ((b1 >> bit) & 1);
                     tile_row[i] = palette_lut[color];
+                    tile_colors[i] = color;
                 }
 
                 for (int i = 0; i < 8; ++i)
@@ -511,7 +536,9 @@ namespace ppu
 
                     const int tile_pixel = (px0 + i) & 0x7;
                     pixels_rendered = true;
-                    framebuffer[fb_row + sx] = tile_row[tile_pixel];
+                    framebuffer[fb_row + sx]   = tile_row[tile_pixel];
+                    bg_color_index[sx]         = tile_colors[tile_pixel];
+                    bg_tile_priority[sx]       = bg_prio;
                 }
             }
         }
@@ -573,7 +600,7 @@ namespace ppu
         palette_lut1[2] = GB_PALETTE_BGR565[(ctx.obp1 >> 4) & 0x03];
         palette_lut1[3] = GB_PALETTE_BGR565[(ctx.obp1 >> 6) & 0x03];
 
-        // Background color 0 (for sprite priority check)
+        // Background color 0 for DMG sprite priority check (CGB uses bg_color_index[])
         const uint16_t bg_color = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
 
         for (int i = visible_sprite_count - 1; i >= 0; --i)
@@ -636,8 +663,18 @@ namespace ppu
                 if (UNLIKELY(color == 0))
                     continue;
 
-                if (UNLIKELY(has_priority && framebuffer[fb_row + sx] != bg_color))
-                    continue;
+                if (cgb_mode) {
+                    // CGB: BG wins if LCDC.0=1 AND (OAM attr.7=1 OR BG tile attr.7=1)
+                    //      AND the BG pixel is not color 0 (transparent)
+                    if ((ctx.lcdc & LCDC_BG_WINDOW_ENABLE) &&
+                        (has_priority || bg_tile_priority[sx]) &&
+                        bg_color_index[sx] != 0)
+                        continue;
+                } else {
+                    // DMG: OAM attr.7=1 → sprite behind BG (only draws over BG color 0)
+                    if (UNLIKELY(has_priority && framebuffer[fb_row + sx] != bg_color))
+                        continue;
+                }
 
                 framebuffer[fb_row + sx] = palette[color];
             }
