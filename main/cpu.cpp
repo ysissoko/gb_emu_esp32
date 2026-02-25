@@ -14,23 +14,18 @@ namespace cpu
     {
         // Initialize instruction trace buffer to zero
         for (auto& trace : trace_buffer) {
-            trace = {};  // Zero-initialize all fields
+            trace = {};
         }
 
-        // Initialize CPU registers to DMG post-boot ROM state (skip boot ROM)
-        // These values match the state after the official DMG boot ROM completes
-        a = 0x01;       // DMG identifier
-        f = 0xB0;       // Z=1, N=0, H=1, C=1
-        b = 0x00;
-        c = 0x13;
-        d = 0x00;
-        e = 0xD8;
-        h = 0x01;
-        l = 0x4D;
+        // Default to DMG post-boot state; will be updated after ROM is loaded
+        // via initializePostBootROMState() which checks mmu.isCGBMode()
+        a = 0x01;   // DMG identifier (overwritten to 0x11 for CGB after ROM load)
+        f = 0xB0;
+        b = 0x00; c = 0x13;
+        d = 0x00; e = 0xD8;
+        h = 0x01; l = 0x4D;
         sp = 0xFFFE;
-        pc = 0x0100;    // Start at game entry point
-
-        ESP_LOGI("CPU", "CPU registers initialized to post-boot ROM DMG state (PC=0x0100)");
+        pc = 0x0100;
     }
 
     CPU::~CPU()
@@ -40,46 +35,58 @@ namespace cpu
 
     void CPU::initializePostBootROMState()
     {
-        // Initialize CPU registers to DMG post-bootrom state
-        // These values match the state after the official DMG bootrom completes execution
-        a = 0x01;  // A register
-        f = 0xB0;  // Flags: Z=1, N=0, H=1, C=1
-        b = 0x00;
-        c = 0x13;
-        d = 0x00;
-        e = 0xD8;
-        h = 0x01;
-        l = 0x4D;
-
-        sp = 0xFFFE;  // Stack pointer
-        pc = 0x0100;  // Program counter (start of cartridge ROM)
-
-        ime_enabled = false;  // IME disabled after bootrom
-
-        ESP_LOGI("CPU", "CPU registers initialized to post-bootrom DMG state (PC=0x0100)");
+        // Set CPU registers to the correct post-boot state based on hardware type.
+        // CGB games check register A to detect hardware: 0x11 = CGB, 0x01 = DMG.
+        // Without this, CGB games run in DMG grayscale compatibility mode.
+        if (mmu.isCGBMode()) {
+            a = 0x11;   // CGB identifier — critical for color mode activation
+            f = 0x80;   // Z=1, N=0, H=0, C=0
+            b = 0x00; c = 0x00;
+            d = 0xFF; e = 0x56;
+            h = 0x00; l = 0x0D;
+            ESP_LOGI("CPU", "CPU registers initialized to post-boot ROM CGB state (A=0x11)");
+        } else {
+            a = 0x01;   // DMG identifier
+            f = 0xB0;   // Z=1, N=0, H=1, C=1
+            b = 0x00; c = 0x13;
+            d = 0x00; e = 0xD8;
+            h = 0x01; l = 0x4D;
+            ESP_LOGI("CPU", "CPU registers initialized to post-boot ROM DMG state (A=0x01)");
+        }
+        sp = 0xFFFE;
+        pc = 0x0100;
+        ime_enabled = false;
     }
 
     /// @brief run starts the CPU execution loop
     void CPU::run_frame()
     {
-
+        // In CGB double-speed mode, the CPU runs at 2× speed (same real-time,
+        // 2× more cycles per frame). PPU and timer are clocked at half the CPU
+        // rate, so we divide cpu_cycles by 2 before stepping them.
         constexpr int CYCLES_PER_SCANLINE = 456;
         constexpr int TOTAL_SCANLINES = 154;
+        // Double-speed: CPU executes 2× cycles per scanline
+        const int cycles_per_scanline = double_speed ? CYCLES_PER_SCANLINE * 2 : CYCLES_PER_SCANLINE;
 
         for (int sl = 0; sl < TOTAL_SCANLINES; ++sl)
         {
             int cycles = 0;
 
-            while (cycles < CYCLES_PER_SCANLINE)
+            while (cycles < cycles_per_scanline)
             {
                 uint8_t cpu_cycles = step();
                 cycles += cpu_cycles;
 
+                // In double-speed: PPU/timer run at half CPU rate
+                // Each CPU cycle = 0.5 PPU/timer cycle → divide by 2
+                uint8_t ppu_timer_cycles = double_speed ? (cpu_cycles >> 1) : cpu_cycles;
+
                 // Update timer immediately after each instruction
-                mmu.stepTimer(cpu_cycles);
+                mmu.stepTimer(ppu_timer_cycles);
 
                 // Update PPU
-                ppu.step(cpu_cycles);
+                ppu.step(ppu_timer_cycles);
 
                 // Check interrupts every instruction (required for accuracy)
                 if (UNLIKELY(test_interrupts_flags()))
@@ -449,6 +456,17 @@ namespace cpu
         case 0x10: // STOP n8
         {
             (void)mmu.read(pc++); // Read and discard operand
+            // CGB: if KEY1 (0xFF4D) bit 0 is set, this STOP triggers a speed switch
+            if (mmu.isCGBMode()) {
+                uint8_t key1 = mmu.read(0xFF4D);
+                if (key1 & 0x01) {
+                    double_speed = !double_speed;
+                    // Write back: bit 7 = current speed, bit 0 = 0 (switch consumed)
+                    mmu.write(0xFF4D, double_speed ? 0x80 : 0x00);
+                    ESP_LOGI("CPU", "CGB speed switch: %s", double_speed ? "DOUBLE" : "NORMAL");
+                    return 8;
+                }
+            }
             cpu_stopped = true;
             return 8;
         }
