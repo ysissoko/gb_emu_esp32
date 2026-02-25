@@ -38,6 +38,12 @@ namespace cpu
             dma_cycles_remaining = 160;  // DMA takes 160 M-cycles (640 clock cycles)
         }
 
+        // Stall CPU for General-Purpose DMA (called by MemoryBus)
+        IRAM_ATTR inline void startGeneralDMAStall(uint16_t cycles) {
+            dma_in_progress = true;
+            dma_cycles_remaining = cycles;
+        }
+
         bool getIME() const { return ime_enabled; }
 
         // Debug control

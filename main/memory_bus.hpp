@@ -149,6 +149,13 @@ namespace memory
         // Step timer for given number of cycles
         void stepTimer(uint8_t cycles);
 
+        // Reset DIV counter (e.g. on STOP / speed switch)
+        void resetDIV();
+
+        // Called by PPU when entering HBlank — copies next 16-byte HDMA block if active
+        void hdmaHBlankStep();
+        bool isHDMAActive() const { return hdma_active; }
+
         // Get serial debug output
         std::string getSerialDebugOutput() const;
         void clearSerialDebugOutput();
@@ -279,5 +286,11 @@ namespace memory
         uint8_t obj_palette_ram[64]{};  // 8 palettes × 4 colors × 2 bytes
         uint8_t bg_palette_index{0};    // BGPI register (bit 7 = auto-increment)
         uint8_t obj_palette_index{0};   // OBPI register (bit 7 = auto-increment)
+
+        // CGB HDMA (HBlank DMA) state
+        bool hdma_active{false};      // HBlank DMA in progress
+        uint16_t hdma_src{0};         // Current source address
+        uint16_t hdma_dst{0};         // Current destination (always 0x8000-0x9FFF)
+        uint8_t hdma_remaining{0};    // Remaining 16-byte blocks minus 1 (0x7F = done)
     };
 }

@@ -78,15 +78,14 @@ namespace cpu
                 uint8_t cpu_cycles = step();
                 cycles += cpu_cycles;
 
-                // In double-speed: PPU/timer run at half CPU rate
-                // Each CPU cycle = 0.5 PPU/timer cycle → divide by 2
-                uint8_t ppu_timer_cycles = double_speed ? (cpu_cycles >> 1) : cpu_cycles;
+                // Timer runs at CPU speed (2x in double-speed); PPU stays at 1x
+                uint8_t ppu_cycles = double_speed ? (cpu_cycles >> 1) : cpu_cycles;
 
                 // Update timer immediately after each instruction
-                mmu.stepTimer(ppu_timer_cycles);
+                mmu.stepTimer(cpu_cycles);   // Timer is always driven by full CPU cycles
 
                 // Update PPU
-                ppu.step(ppu_timer_cycles);
+                ppu.step(ppu_cycles);        // PPU stays at single speed
 
                 // Check interrupts every instruction (required for accuracy)
                 if (UNLIKELY(test_interrupts_flags()))
@@ -461,8 +460,10 @@ namespace cpu
                 uint8_t key1 = mmu.read(0xFF4D);
                 if (key1 & 0x01) {
                     double_speed = !double_speed;
-                    // Write back: bit 7 = current speed, bit 0 = 0 (switch consumed)
-                    mmu.write(0xFF4D, double_speed ? 0x80 : 0x00);
+                    // Write back: bit 7 = current speed, bits 6-1 = 1, bit 0 = 0 (switch consumed)
+                    mmu.write(0xFF4D, double_speed ? 0xFE : 0x7E);
+                    // Reset DIV on speed switch (Pan Docs: "DIV is reset when executing STOP")
+                    mmu.resetDIV();
                     ESP_LOGI("CPU", "CGB speed switch: %s", double_speed ? "DOUBLE" : "NORMAL");
                     return 8;
                 }
@@ -752,7 +753,8 @@ namespace cpu
             uint8_t ie = mmu.read(memory::IE_REGISTER);
             uint8_t if_ = mmu.read(memory::IF_REGISTER);
 
-            if (!ime_enabled && (ie & if_))
+            uint8_t pending = ie & if_ & 0x1F;
+            if (!ime_enabled && pending != 0)
             {
                 // HALT bug
                 halt_bug = true;

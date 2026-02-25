@@ -77,8 +77,9 @@ namespace ppu
         uint8_t r = (color >> 0) & 0x1F;
         uint8_t g = (color >> 5) & 0x1F;
         uint8_t b = (color >> 10) & 0x1F;
-        // Scale 5-bit to 5/6-bit: r,b stay 5-bit, g expands to 6-bit (×2)
-        return static_cast<uint16_t>((b << 11) | (g << 6) | r);
+        // Proper 5-bit → 6-bit green expansion: replicates MSB as LSB
+        // [0..31] → [0..63], e.g. 31→63, 16→33, 0→0
+        return static_cast<uint16_t>((b << 11) | (((g << 1) | (g >> 4)) << 5) | r);
     }
 
     // Cached PPU register context for scanline rendering (avoid repeated MMU reads)
@@ -141,6 +142,10 @@ namespace ppu
         const uint8_t* bg_palette_ram{nullptr};
         const uint8_t* obj_palette_ram{nullptr};
 
+        // Per-scanline BG color data (CGB sprite priority)
+        uint8_t bg_color_index[display::LCD_WIDTH]{};   // BG/Win color index 0-3 per pixel
+        bool    bg_tile_priority[display::LCD_WIDTH]{}; // BG Map attr bit 7 per pixel
+
         // Framebuffer: Direct RGB565 (no conversion needed!)
         // Allocated in INTERNAL RAM for fast access (DMA-compatible)
         uint16_t* framebuffer{nullptr};
@@ -168,10 +173,10 @@ namespace ppu
 
         // Helper functions
         void renderScanline();
-        void renderBackground(const ScanlineContext& ctx);
-        void renderWindow(const ScanlineContext& ctx);
+        IRAM_ATTR void renderBackground(const ScanlineContext& ctx);
+        IRAM_ATTR void renderWindow(const ScanlineContext& ctx);
         void scanOAM();
-        void renderSprites(const ScanlineContext& ctx);
+        IRAM_ATTR void renderSprites(const ScanlineContext& ctx);
         void setMode(Mode new_mode);
         void updateLY(uint8_t new_ly);
         void triggerSTATIfNeeded();  // Check and trigger STAT interrupt if needed
