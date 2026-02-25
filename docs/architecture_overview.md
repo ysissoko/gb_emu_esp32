@@ -120,17 +120,25 @@ Based on the PCB design (README_PCB_Design.md), the system uses ESP32-S3-WROOM-1
 - **Extras**: ADC for battery level, UART for debug, USB for flashing.
 - **GPIO Mapping**: SPI shared (CLK12, MOSI11, MISO13), LCD CS9/DC10/RST8/BL7, SD CS14, etc.
 
-## Future Plans
+## CGB (Game Boy Color) Support
 
-### CGB Refactor (CGB_refactor_checklist.md, CGB_refactor_plan)
-- **Goals**: Extend to Game Boy Color compatibility.
-- **Planned Changes** (checklist empty, plan empty; inferred from code comments):
-  - Add CGB boot ROM (512/1792 bytes).
-  - Support double-speed mode, extra palettes.
-  - Infrared adapter, rumble (if applicable).
-  - Enhanced PPU for CGB features (priority, effects).
-- **Status**: Planning phase; no code changes yet.
-- **Timeline**: Post-DMG stabilization.
+CGB support was added without breaking any DMG functionality. All CGB code paths are guarded by a `cgb_mode` flag detected from the ROM header byte `0x0143` (`0x80` = CGB-compatible, `0xC0` = CGB-only).
+
+### Implemented
+- **Mode detection**: `MemoryBus::loadROM()` reads `0x0143`, sets `cgb_mode`, propagates to PPU
+- **VRAM banking** (`VBK` 0xFF4F): second 8KB VRAM bank in PSRAM, selected per tile in PPU
+- **WRAM banking** (`SVBK` 0xFF70): 6 extra 4KB WRAM banks (2–7) in PSRAM for `0xD000–0xDFFF`
+- **CGB palette RAM**: `BGPI/BGPD` (0xFF68/69), `OBPI/OBPD` (0xFF6A/6B) – 8 BG + 8 OBJ palettes
+- **HDMA** (0xFF51–FF55): General-purpose DMA implemented; HBlank DMA simplified
+- **PPU CGB rendering**: tile attributes from VRAM bank 1 (palette, H/V flip, VRAM bank, BG priority), 15-bit color conversion to BGR565
+- **Double-speed mode** (`KEY1` 0xFF4D): STOP + KEY1 bit 0 toggles speed; CPU runs 2× cycles/frame; PPU/timer receive half cycles
+
+### Remaining
+- CGB boot ROM (Phase 6)
+- Proper per-HBlank DMA state machine (Phase 5)
+- `dmg_acid2` / `cgb_acid2` test ROM validation
+
+## Future Plans
 
 ### Other Enhancements
 - APU implementation for sound.
