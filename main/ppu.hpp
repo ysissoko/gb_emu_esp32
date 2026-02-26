@@ -70,16 +70,18 @@ namespace ppu
         return (b << 11) | (g << 5) | r;  // Reassemble as BGR
     }
 
-    // Convert CGB 15-bit color (GBR555) to BGR565 for ST7789V
-    // CGB format: bits 14-10=B, 9-5=G, 4-0=R (little-endian 2 bytes)
-    static inline uint16_t cgb_color_to_bgr565(uint8_t lo, uint8_t hi) {
+    // Convert CGB 15-bit color to RGB565 for ST7789V.
+    // CGB palette RAM format (little-endian): bits 4-0=R, 9-5=G, 14-10=B.
+    // The ST7789V is in MADCTL RGB mode (BGR bit=0), so output must be RGB565:
+    //   bits [15:11]=R, [10:5]=G (6-bit expanded), [4:0]=B.
+    // Note: green is expanded from 5-bit to 6-bit by replicating the MSB as LSB.
+    static inline uint16_t cgb_color_to_rgb565(uint8_t lo, uint8_t hi) {
         uint16_t color = (static_cast<uint16_t>(hi) << 8) | lo;
         uint8_t r = (color >> 0) & 0x1F;
         uint8_t g = (color >> 5) & 0x1F;
         uint8_t b = (color >> 10) & 0x1F;
-        // Proper 5-bit → 6-bit green expansion: replicates MSB as LSB
-        // [0..31] → [0..63], e.g. 31→63, 16→33, 0→0
-        return static_cast<uint16_t>((b << 11) | (((g << 1) | (g >> 4)) << 5) | r);
+        // 5-bit green → 6-bit: replicate MSB as LSB  (e.g. 31→63, 16→33, 0→0)
+        return static_cast<uint16_t>((r << 11) | (((g << 1) | (g >> 4)) << 5) | b);
     }
 
     // Cached PPU register context for scanline rendering (avoid repeated MMU reads)
