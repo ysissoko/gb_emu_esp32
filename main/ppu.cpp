@@ -365,7 +365,7 @@ namespace ppu
                 uint16_t palette_lut[4];
                 const uint8_t* pal = bg_palette_ram + palette_num * 8;
                 for (int c = 0; c < 4; ++c) {
-                    palette_lut[c] = cgb_color_to_bgr565(pal[c * 2], pal[c * 2 + 1]);
+                    palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
                 }
 
                 uint16_t tile_row[8];
@@ -510,7 +510,7 @@ namespace ppu
                 const uint8_t* pal = bg_palette_ram + palette_num * 8;
                 uint16_t palette_lut[4];
                 for (int c = 0; c < 4; ++c) {
-                    palette_lut[c] = cgb_color_to_bgr565(pal[c * 2], pal[c * 2 + 1]);
+                    palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
                 }
 
                 uint16_t tile_row[8];
@@ -642,7 +642,7 @@ namespace ppu
                 const uint8_t* pal = obj_palette_ram + cgb_pal_num * 8;
                 cgb_palette_lut[0] = 0;  // transparent
                 for (int c = 1; c < 4; ++c) {
-                    cgb_palette_lut[c] = cgb_color_to_bgr565(pal[c * 2], pal[c * 2 + 1]);
+                    cgb_palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
                 }
                 palette = cgb_palette_lut;
             }
