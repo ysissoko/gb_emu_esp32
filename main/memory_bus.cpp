@@ -20,9 +20,9 @@ namespace memory
           oam{0}, io_registers{0}, hram{0}, ie_register{0}, if_register{0},
           prev_joypad_state{0xFF}, joypad{joypad}
     {
-        // Allocate extended ROM storage in PSRAM (2MB max)
+        // Allocate extended ROM storage in PSRAM (8MB — full MBC5 maximum, covers all GB/GBC games)
         rom_extended = static_cast<uint8_t*>(
-            heap_caps_malloc(0x200000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            heap_caps_malloc(0x800000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 
         if (!rom_extended)
         {
@@ -30,8 +30,8 @@ namespace memory
         }
         else
         {
-            ESP_LOGI("MemoryBus", "Allocated 2MB ROM extended storage in PSRAM");
-            memset(rom_extended, 0xFF, 0x200000);
+            ESP_LOGI("MemoryBus", "Allocated 8MB ROM extended storage in PSRAM");
+            memset(rom_extended, 0xFF, 0x800000);
         }
 
         // Allocate external RAM in PSRAM (32KB for MBC1/3/5)
@@ -197,8 +197,8 @@ namespace memory
                 // La zone 0x4000-0x7FFF utilise la banque ROM "complète".
                 uint16_t bank = rom_bank;
 
-                // Bank 0 est interdit dans la zone switchable
-                if (bank == 0) bank = 1;
+                // Bank 0 is forbidden for MBC1/2/3 in the switchable area, but MBC5 allows it
+                if (bank == 0 && mbc_type != 5) bank = 1;
 
                 // Bank 1 est déjà dans rom[] (0x4000-0x7FFF)
                 if (bank == 1) {
@@ -439,9 +439,13 @@ namespace memory
                     rom_bank = bank;
                     rom_bank &= rom_bank_mask;  // Mask to valid banks
                 } else if (mbc_type == 5) {
-                    // MBC5: 9-bit bank number (lower 8 bits)
-                    rom_bank = (rom_bank & 0x100) | value;
-                    rom_bank &= rom_bank_mask;  // Mask to valid banks
+                    // MBC5: 0x2000-0x2FFF = lower 8 bits; 0x3000-0x3FFF = bit 8
+                    if ((address >> 12) == 0x2) {
+                        rom_bank = (rom_bank & 0x100) | value;
+                    } else {
+                        rom_bank = (rom_bank & 0xFF) | ((value & 0x01) << 8);
+                    }
+                    rom_bank &= rom_bank_mask;
                 }
                 return;
 
@@ -461,9 +465,8 @@ namespace memory
                     // MBC3: RAM bank (0x00-0x03) or RTC register (0x08-0x0C)
                     ram_bank = value & 0x0F;
                 } else if (mbc_type == 5) {
-                    // MBC5: 9th bit of ROM bank
-                    rom_bank = (rom_bank & 0xFF) | ((value & 0x01) << 8);
-                    rom_bank &= rom_bank_mask;  // Mask to valid banks
+                    // MBC5: RAM bank select (4 bits, 0x00-0x0F)
+                    ram_bank = value & 0x0F;
                 }
                 return;
 
@@ -787,7 +790,7 @@ namespace memory
         // Load remaining banks into extended ROM (PSRAM)
         if (size > rom.size() && rom_extended) {
             size_t extra_size = size - rom.size();
-            size_t max_extended = 0x200000;  // 2MB PSRAM limit
+            size_t max_extended = 0x800000;  // 8MB — MBC5 maximum, covers all GB/GBC games
             size_t copy_size = (extra_size > max_extended) ? max_extended : extra_size;
 
             std::memcpy(rom_extended, data + rom.size(), copy_size);
