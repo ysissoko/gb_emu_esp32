@@ -203,6 +203,12 @@ namespace memory
                 // Bank 0 is forbidden for MBC1/2/3 in the switchable area, but MBC5 allows it
                 if (bank == 0 && mbc_type != 5) bank = 1;
 
+                // MBC5 bank 0 in switchable area maps to the same data as the fixed area
+                // (bank - 2 would underflow for bank=0, so handle explicitly)
+                if (bank == 0) {
+                    return rom[address];
+                }
+
                 // Bank 1 est déjà dans rom[] (0x4000-0x7FFF)
                 if (bank == 1) {
                     return rom[address];
@@ -586,6 +592,11 @@ namespace memory
                     else if (address == timer::TMA_REGISTER) timer->writeTMA(value);
                     else if (address == timer::TAC_REGISTER) timer->writeTAC(value);
                     else if (address == IF_REGISTER) if_register = value;
+                    else if (address == 0xFF41) {
+                        // STAT (0xFF41): bits 0-2 are read-only (PPU-controlled mode + LYC=LY flag)
+                        // Only bits 3-6 (interrupt enable flags) are writable by the CPU
+                        io_registers[0x41] = (io_registers[0x41] & 0x07) | (value & 0x78);
+                    }
                     else if (address == 0xFF46) {
                         // DMA Transfer (0xFF46): Copy 160 bytes from XX00-XX9F to OAM (0xFE00-0xFE9F)
                         // DMA blocks CPU for 160 M-cycles
@@ -638,9 +649,9 @@ namespace memory
                             }
                             io_registers[0x55] = 0xFF;  // DMA complete
 
-                            // Stall CPU for General DMA duration: 8 M-cycles per 16-byte block
+                            // Stall CPU for General DMA duration: 8 M-cycles per 16-byte block = 32 T-cycles/block
                             if (cpu) {
-                                uint16_t stall_cycles = (static_cast<uint16_t>(blocks) + 1) * 8;
+                                uint16_t stall_cycles = (static_cast<uint16_t>(blocks) + 1) * 32;
                                 cpu->startGeneralDMAStall(stall_cycles);
                             }
                         } else {
@@ -973,6 +984,13 @@ namespace memory
         } else {
             hdma_remaining--;
             io_registers[0x55] = hdma_remaining;  // Remaining blocks, bit 7 = 0 (active)
+        }
+
+        // Stall CPU for HDMA block transfer: 8 M-cycles = 32 T-cycles (normal speed),
+        // 16 M-cycles = 64 T-cycles (double speed, KEY1 bit 7 = 1)
+        if (cpu) {
+            const bool double_speed = (io_registers[0x4D] & 0x80) != 0;
+            cpu->startGeneralDMAStall(double_speed ? 64 : 32);
         }
     }
 

@@ -84,17 +84,14 @@ namespace ppu
             mode = Mode::HBLANK;
             mode_cycles = 0;
 
-            // Update LY to 0 (LCD off state)
-            updateLY(0);
-
-            // Force STAT to show mode 0 (HBLANK) when LCD is disabled
-            // This is required for games that poll STAT even when LCD is off
-            uint8_t stat = mmu.read(0xFF41);
-            stat = (stat & 0xFC);  // Clear mode bits (0-1), keep other bits
-            mmu.write(0xFF41, stat);
-
-            // Check STAT interrupt after state changes
-            triggerSTATIfNeeded();
+            // Update LY to 0 and STAT mode bits directly — without triggering STAT interrupts.
+            // On real hardware, STAT interrupts are suppressed while the LCD is disabled.
+            ly = 0;
+            const uint8_t lyc_off = mmu.read(0xFF45);
+            uint8_t stat_off = mmu.read(0xFF41);
+            stat_off &= 0xFC;  // mode = 0 (HBlank)
+            if (ly == lyc_off) stat_off |= 0x04; else stat_off &= ~0x04;
+            mmu.writePPUStat(stat_off);
             return;
         }
 
@@ -202,10 +199,10 @@ namespace ppu
 
         mode = new_mode;
 
-        // Update STAT register mode bits (0-1)
+        // Update STAT register mode bits (0-1) — use PPU bypass to write hardware-controlled bits
         uint8_t stat = mmu.read(0xFF41);
         stat = (stat & 0xFC) | static_cast<uint8_t>(new_mode);
-        mmu.write(0xFF41, stat);
+        mmu.writePPUStat(stat);
 
         // Trigger STAT interrupt immediately if needed
         triggerSTATIfNeeded();
@@ -231,7 +228,7 @@ namespace ppu
             stat &= ~0x04;  // Clear coincidence flag
         }
 
-        mmu.write(0xFF41, stat);
+        mmu.writePPUStat(stat);
 
         // Trigger STAT interrupt immediately if needed
         triggerSTATIfNeeded();
