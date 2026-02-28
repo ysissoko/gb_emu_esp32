@@ -156,6 +156,10 @@ namespace memory
         void hdmaHBlankStep();
         bool isHDMAActive() const { return hdma_active; }
 
+        // Direct STAT register write for PPU internal use only.
+        // Bypasses the CPU-facing write protection on bits 0-2 (mode + LYC=LY flag).
+        inline void writePPUStat(uint8_t stat) { io_registers[0x41] = stat; }
+
         // Get serial debug output
         std::string getSerialDebugOutput() const;
         void clearSerialDebugOutput();

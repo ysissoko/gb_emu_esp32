@@ -40,7 +40,7 @@ namespace cpu
         // DMA control - called by MemoryBus when DMA is triggered
         IRAM_ATTR inline void startDMA() {
             dma_in_progress = true;
-            dma_cycles_remaining = 160;  // DMA takes 160 M-cycles (640 clock cycles)
+            dma_cycles_remaining = 640;  // OAM DMA takes 160 M-cycles = 640 T-cycles
         }
 
         // Stall CPU for General-Purpose DMA (called by MemoryBus)
