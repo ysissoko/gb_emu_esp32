@@ -103,8 +103,6 @@ namespace display::menu
         bool a_pressed = joypad->buttonAPressed();
         bool start_pressed = joypad->buttonStartPressed();
 
-        constexpr uint8_t MAX_VISIBLE_ITEMS = 10;
-
         // Detect rising edge (button just pressed, not held)
         if (up_pressed && !prev_up)
         {
@@ -169,9 +167,8 @@ namespace display::menu
         // Clear the framebuffer RGB565 (full screen!)
         clear_framebuffer_rgb565(framebuffer, MENU_WIDTH * FB_CHUNK_HEIGHT, RGB565_BLACK);
 
-        constexpr uint8_t MAX_VISIBLE_ITEMS = 10;
         constexpr uint8_t ITEM_HEIGHT = 24;
-        constexpr uint8_t START_Y = 70;
+        constexpr uint8_t START_Y = 16;
 
         // Clamp scroll_offset to valid range (safety check)
         if (scroll_offset < 0) scroll_offset = 0;
@@ -217,7 +214,7 @@ namespace display::menu
             {
                 // Up arrow at top
                 draw_char_16x16_rgb565(framebuffer, MENU_WIDTH, FB_CHUNK_HEIGHT,
-                                       (MENU_WIDTH >> 1) - 8, 50, '^', RGB565_CYAN);
+                                       (MENU_WIDTH >> 1) - 8, 0, '^', RGB565_CYAN);
             }
             if (scroll_offset + MAX_VISIBLE_ITEMS < rom_count)
             {

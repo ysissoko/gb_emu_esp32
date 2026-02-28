@@ -12,10 +12,12 @@ namespace cpu
 
     CPU::CPU(memory::MemoryBus &mmu, ppu::PPU &ppu) : mmu(mmu), ppu(ppu)
     {
+#if ENABLE_CPU_TRACE
         // Initialize instruction trace buffer to zero
         for (auto& trace : trace_buffer) {
             trace = {};
         }
+#endif
 
         // Default to DMG post-boot state; will be updated after ROM is loaded
         // via initializePostBootROMState() which checks mmu.isCGBMode()
@@ -135,6 +137,7 @@ namespace cpu
         return false;
     }
 
+#if ENABLE_CPU_TRACE
     void CPU::recordInstruction(uint16_t pc_val, uint8_t opcode_val)
     {
         InstructionTrace& trace = trace_buffer[trace_index];
@@ -212,6 +215,7 @@ namespace cpu
 
         ESP_LOGI("CPU", "Trace saved to %s (%d entries)", filename, valid_entries);
     }
+#endif // ENABLE_CPU_TRACE
 
     /// @brief step executes a single CPU instruction
     /// @return the number of cycles the instruction took
@@ -252,7 +256,9 @@ namespace cpu
         }
 
         uint8_t opcode;
+#if ENABLE_CPU_TRACE
         uint16_t pc_before_fetch = pc;
+#endif
 
         if (halt_bug)
         {
@@ -264,6 +270,7 @@ namespace cpu
             opcode = mmu.read(pc++);
         }
 
+#if ENABLE_CPU_TRACE
         // Record this instruction in the trace buffer
         recordInstruction(pc_before_fetch, opcode);
 
@@ -367,6 +374,7 @@ namespace cpu
             same_pc_counter = 0;
             last_pc = pc;
         }
+#endif // ENABLE_CPU_TRACE
 
         return execute(opcode);
     }

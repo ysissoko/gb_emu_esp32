@@ -10,6 +10,11 @@
 #define LIKELY(x)   __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
+// Set to 1 to enable CPU instruction tracing and freeze detection (significant overhead per step)
+#ifndef ENABLE_CPU_TRACE
+#define ENABLE_CPU_TRACE 0
+#endif
+
 namespace cpu
 {
     constexpr uint16_t Z_FLAG_MASK = 0x80;
@@ -88,6 +93,8 @@ namespace cpu
 
         // Debug control
         bool debug_logs_enabled{false};
+
+#if ENABLE_CPU_TRACE
         uint32_t loop_iteration_count{0};  // Track polling loop iterations
 
         // Debug: Circular buffer for instruction history (last 500 instructions before crash)
@@ -106,6 +113,7 @@ namespace cpu
 
         void recordInstruction(uint16_t pc_val, uint8_t opcode_val);
         void dumpTraceBuffer() const;
+#endif // ENABLE_CPU_TRACE
 
         IRAM_ATTR inline bool readZFlag() const { return (f & Z_FLAG_MASK) != 0; };
         IRAM_ATTR inline bool readNFlag() const { return (f & N_FLAG_MASK) != 0; };

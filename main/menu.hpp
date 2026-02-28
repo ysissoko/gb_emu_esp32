@@ -43,8 +43,9 @@ namespace display::menu {
             bool needs_redraw{true};
 
             static constexpr int MENU_WIDTH = 240;
-            static constexpr int MENU_HEIGHT = 320;
-            static constexpr int FB_CHUNK_HEIGHT = 320;  // Framebuffer pleine hauteur
-            uint16_t* framebuffer{nullptr};  // Allocated dynamically (240x320 full screen)
+            static constexpr int MENU_HEIGHT = 240;
+            static constexpr int FB_CHUNK_HEIGHT = 240;  // Match actual LCD height
+            static constexpr uint8_t MAX_VISIBLE_ITEMS = 9;  // (240 - START_Y=16) / ITEM_HEIGHT=24
+            uint16_t* framebuffer{nullptr};
     };
 }

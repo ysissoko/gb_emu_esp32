@@ -125,14 +125,14 @@ namespace display
         ESP_LOGI("LCD", "Activating color inversion (matching example code)...");
         // Example code calls 0x21 (INVON) twice (lines 87 and 164)
         // This inverts display colors - RGB becomes BGR effectively
-        esp_lcd_panel_invert_color(panel, true); // Enable inversion like example
+        esp_lcd_panel_invert_color(panel, false); // Enable inversion like example
 
         // For ST7789V, we might need to configure RGB/BGR order
         // Some modules use BGR instead of RGB
         // This command sets the color order (command 0x36 - MADCTL)
         // Bit 3 controls RGB/BGR: 0 = RGB, 1 = BGR
         ESP_LOGI("LCD", "Configuring MADCTL for ST7789V (portrait mode without rotation)...");
-        // ST7789V MADCTL configuration for portrait mode (240x320) without rotation
+        // ST7789V MADCTL configuration for portrait mode (240x240) without rotation
         // 0x00 = 00000000 binary:
         //   Bit 7 (MY=0): Normal row address order
         //   Bit 6 (MX=0): Normal column address order

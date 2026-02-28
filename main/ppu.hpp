@@ -5,6 +5,7 @@
 #include "esp_attr.h"
 
 #include <cstdint>
+#include <algorithm>
 #include <array>
 #include <memory>
 
@@ -70,18 +71,24 @@ namespace ppu
         return (b << 11) | (g << 5) | r;  // Reassemble as BGR
     }
 
-    // Convert CGB 15-bit color to RGB565 for ST7789V.
+    // Convert CGB 15-bit color to RGB565 for ST7789V with GBC color correction.
     // CGB palette RAM format (little-endian): bits 4-0=R, 9-5=G, 14-10=B.
-    // The ST7789V is in MADCTL RGB mode (BGR bit=0), so output must be RGB565:
-    //   bits [15:11]=R, [10:5]=G (6-bit expanded), [4:0]=B.
-    // Note: green is expanded from 5-bit to 6-bit by replicating the MSB as LSB.
+    // MADCTL=0x00 → RGB order: bits[15:11]=R, bits[10:5]=G, bits[4:0]=B.
+    // GBC color correction (near.sh/Gambatte formula) maps 5-bit GBC channels to
+    // account for the original GBC LCD's color filter matrix, giving natural-looking
+    // colors on modern displays instead of over-saturated / cyan-tinted output.
     static inline uint16_t cgb_color_to_rgb565(uint8_t lo, uint8_t hi) {
         uint16_t color = (static_cast<uint16_t>(hi) << 8) | lo;
         uint8_t r = (color >> 0) & 0x1F;
         uint8_t g = (color >> 5) & 0x1F;
         uint8_t b = (color >> 10) & 0x1F;
-        // 5-bit green → 6-bit: replicate MSB as LSB  (e.g. 31→63, 16→33, 0→0)
-        return static_cast<uint16_t>((r << 11) | (((g << 1) | (g >> 4)) << 5) | b);
+        // GBC color correction: mix channels like the original GBC LCD filter matrix
+        // Each output channel is a weighted sum of all input channels (5-bit → 5-bit)
+        uint8_t R = static_cast<uint8_t>(std::min(31, (r * 26 + g * 4 + b * 2) >> 5));
+        uint8_t G = static_cast<uint8_t>(std::min(31, (g * 24 + b * 8         ) >> 5));
+        uint8_t B = static_cast<uint8_t>(std::min(31, (r * 6  + g * 4 + b * 22) >> 5));
+        // 5-bit green → 6-bit: replicate MSB as LSB
+        return static_cast<uint16_t>((R << 11) | (((G << 1) | (G >> 4)) << 5) | B);
     }
 
     // Cached PPU register context for scanline rendering (avoid repeated MMU reads)
@@ -124,6 +131,8 @@ namespace ppu
         void setVRAMBank1(const uint8_t* bank1) { vram_bank1 = bank1; }
         void setBGPaletteRAM(const uint8_t* pal) { bg_palette_ram = pal; }
         void setOBJPaletteRAM(const uint8_t* pal) { obj_palette_ram = pal; }
+        void setBGPalCache(const uint16_t* cache) { bg_pal_cache = cache; }
+        void setOBJPalCache(const uint16_t* cache) { obj_pal_cache = cache; }
 
         // Pipeline asynchrone methods
         static void render_task(void* arg);
@@ -143,6 +152,10 @@ namespace ppu
         const uint8_t* vram_bank1{nullptr};
         const uint8_t* bg_palette_ram{nullptr};
         const uint8_t* obj_palette_ram{nullptr};
+        // Pre-converted RGB565 palette cache (updated by MemoryBus on palette writes)
+        // Layout: [palette_num 0-7][color 0-3]
+        const uint16_t* bg_pal_cache{nullptr};
+        const uint16_t* obj_pal_cache{nullptr};
 
         // Per-scanline BG color data (CGB sprite priority)
         uint8_t bg_color_index[display::LCD_WIDTH]{};   // BG/Win color index 0-3 per pixel
