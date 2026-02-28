@@ -362,10 +362,16 @@ namespace ppu
                 const uint8_t b1 = tile_vram[vram_offset];
                 const uint8_t b2 = tile_vram[vram_offset + 1];
 
-                uint16_t palette_lut[4];
-                const uint8_t* pal = bg_palette_ram + palette_num * 8;
-                for (int c = 0; c < 4; ++c) {
-                    palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
+                // Use pre-converted palette cache (avoids per-tile cgb_color_to_rgb565 calls)
+                const uint16_t* palette_lut = bg_pal_cache
+                    ? (bg_pal_cache + palette_num * 4)
+                    : nullptr;
+                uint16_t palette_lut_local[4];
+                if (UNLIKELY(!palette_lut)) {
+                    const uint8_t* pal = bg_palette_ram + palette_num * 8;
+                    for (int c = 0; c < 4; ++c)
+                        palette_lut_local[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
+                    palette_lut = palette_lut_local;
                 }
 
                 uint16_t tile_row[8];
@@ -508,9 +514,15 @@ namespace ppu
                 const uint8_t b2 = tile_vram[vram_offset + 1];
 
                 const uint8_t* pal = bg_palette_ram + palette_num * 8;
-                uint16_t palette_lut[4];
-                for (int c = 0; c < 4; ++c) {
-                    palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
+                // Use pre-converted palette cache when available
+                const uint16_t* palette_lut = bg_pal_cache
+                    ? (bg_pal_cache + palette_num * 4)
+                    : nullptr;
+                uint16_t palette_lut_local[4];
+                if (UNLIKELY(!palette_lut)) {
+                    for (int c = 0; c < 4; ++c)
+                        palette_lut_local[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
+                    palette_lut = palette_lut_local;
                 }
 
                 uint16_t tile_row[8];
@@ -635,14 +647,22 @@ namespace ppu
 
             const uint16_t* palette = (s.attributes & OAM_PALETTE) ? palette_lut1 : palette_lut0;
 
-            // In CGB mode, override palette with OBJ palette RAM
+            // In CGB mode, override palette with OBJ palette cache (or raw RAM fallback)
             uint16_t cgb_palette_lut[4];
-            if (cgb_mode && obj_palette_ram) {
+            if (cgb_mode) {
                 const uint8_t cgb_pal_num = s.attributes & 0x07;
-                const uint8_t* pal = obj_palette_ram + cgb_pal_num * 8;
-                cgb_palette_lut[0] = 0;  // transparent
-                for (int c = 1; c < 4; ++c) {
-                    cgb_palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
+                if (obj_pal_cache) {
+                    // Use pre-converted cache; color 0 is transparent
+                    cgb_palette_lut[0] = 0;
+                    const uint16_t* pal_entry = obj_pal_cache + cgb_pal_num * 4;
+                    cgb_palette_lut[1] = pal_entry[1];
+                    cgb_palette_lut[2] = pal_entry[2];
+                    cgb_palette_lut[3] = pal_entry[3];
+                } else if (obj_palette_ram) {
+                    const uint8_t* pal = obj_palette_ram + cgb_pal_num * 8;
+                    cgb_palette_lut[0] = 0;
+                    for (int c = 1; c < 4; ++c)
+                        cgb_palette_lut[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
                 }
                 palette = cgb_palette_lut;
             }

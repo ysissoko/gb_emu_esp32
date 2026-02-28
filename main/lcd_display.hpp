@@ -16,10 +16,10 @@ namespace display
 
     constexpr int LCD_WIDTH = 160; // The original gameboy screen width
     constexpr int LCD_HEIGHT = 144; // The original gameboy screen height
-    constexpr int SPI_CLK_FREQ_MHZ = 40; // SPI clock set in mhz
+    constexpr int SPI_CLK_FREQ_MHZ = 60; // SPI clock set in mhz
 
     static constexpr int CHUNK_LINES = 8;
-    static constexpr int CHUNK_PIXELS = SCREEN_WIDTH * CHUNK_LINES;
+    static constexpr int CHUNK_PIXELS = SCREEN_WIDTH * CHUNK_LINES;  // Must fit full screen width (menu)
 
     // Pixel color (Game Boy has 4 shades of gray)
     enum class Color : uint8_t

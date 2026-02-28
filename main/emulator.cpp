@@ -122,9 +122,9 @@ namespace emulator
         {
             int64_t frame_start = esp_timer_get_time();
 
-            // Frame skipping: lag-based decision (only skip rendering, not emulation)
-            // TEMPORARY: Disable frame skipping for debugging
-            bool should_skip = false; // (emulator->lag_us > FRAME_US / 2);
+            // Frame skipping disabled: if emulator runs slow, lag accumulates past FRAME_US/2
+            // and all frames get skipped permanently. Re-enable only when emulator is fast enough.
+            bool should_skip = false;
 
             // Set PPU rendering flag based on skip decision (affects render only!)
             emulator->ppu->setShouldRender(!should_skip);
@@ -270,6 +270,8 @@ namespace emulator
         ppu->setVRAMBank1(mmu->getVRAMBank1());
         ppu->setBGPaletteRAM(mmu->getBGPaletteRAM());
         ppu->setOBJPaletteRAM(mmu->getOBJPaletteRAM());
+        ppu->setBGPalCache(mmu->getBGPalCache());
+        ppu->setOBJPalCache(mmu->getOBJPalCache());
 
         ESP_LOGI(TAG, "Creating CPU...");
         cpu = std::make_unique<cpu::CPU>(*mmu, *ppu);

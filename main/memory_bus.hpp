@@ -180,6 +180,8 @@ namespace memory
         inline const uint8_t* getVRAMBank1() const { return vram_bank1; }
         inline const uint8_t* getBGPaletteRAM() const { return bg_palette_ram; }
         inline const uint8_t* getOBJPaletteRAM() const { return obj_palette_ram; }
+        inline const uint16_t* getBGPalCache() const { return &bg_pal_cache[0][0]; }
+        inline const uint16_t* getOBJPalCache() const { return &obj_pal_cache[0][0]; }
         inline uint8_t getVRAMBankIndex() const { return vram_bank; }
 
     private:
@@ -286,6 +288,9 @@ namespace memory
         uint8_t obj_palette_ram[64]{};  // 8 palettes × 4 colors × 2 bytes
         uint8_t bg_palette_index{0};    // BGPI register (bit 7 = auto-increment)
         uint8_t obj_palette_index{0};   // OBPI register (bit 7 = auto-increment)
+        // Pre-converted RGB565 palette cache (updated on every BGPD/OBPD write)
+        uint16_t bg_pal_cache[8][4]{};
+        uint16_t obj_pal_cache[8][4]{};
 
         // CGB HDMA (HBlank DMA) state
         bool hdma_active{false};      // HBlank DMA in progress

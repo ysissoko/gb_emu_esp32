@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include <algorithm>
 #include <cstring>
 
 // Branch prediction hints
@@ -15,24 +16,25 @@
 
 namespace memory
 {
+    // Convert CGB 15-bit color to RGB565 with GBC color correction (same as PPU).
+    // GBC format: bits [4:0]=R, [9:5]=G, [14:10]=B (little-endian). MADCTL=0x00 RGB order.
+    static inline uint16_t cgb_pal_to_rgb565(uint8_t lo, uint8_t hi)
+    {
+        uint16_t color = (static_cast<uint16_t>(hi) << 8) | lo;
+        uint8_t r = (color >> 0) & 0x1F;
+        uint8_t g = (color >> 5) & 0x1F;
+        uint8_t b = (color >> 10) & 0x1F;
+        uint8_t R = static_cast<uint8_t>(std::min(31, (r * 26 + g * 4 + b * 2) >> 5));
+        uint8_t G = static_cast<uint8_t>(std::min(31, (g * 24 + b * 8         ) >> 5));
+        uint8_t B = static_cast<uint8_t>(std::min(31, (r * 6  + g * 4 + b * 22) >> 5));
+        return static_cast<uint16_t>((R << 11) | (((G << 1) | (G >> 4)) << 5) | B);
+    }
     MemoryBus::MemoryBus(const std::shared_ptr<controller::Joypad>& joypad)
         : rom{0}, vram{0}, wram{0},
           oam{0}, io_registers{0}, hram{0}, ie_register{0}, if_register{0},
           prev_joypad_state{0xFF}, joypad{joypad}
     {
-        // Allocate extended ROM storage in PSRAM (8MB — full MBC5 maximum, covers all GB/GBC games)
-        rom_extended = static_cast<uint8_t*>(
-            heap_caps_malloc(0x800000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-
-        if (!rom_extended)
-        {
-            ESP_LOGE("MemoryBus", "Failed to allocate ROM extended storage in PSRAM!");
-        }
-        else
-        {
-            ESP_LOGI("MemoryBus", "Allocated 8MB ROM extended storage in PSRAM");
-            memset(rom_extended, 0xFF, 0x800000);
-        }
+        // rom_extended is allocated in loadROM() based on actual ROM size
 
         // Allocate external RAM in PSRAM (32KB for MBC1/3/5)
         external_ram = static_cast<uint8_t*>(
@@ -166,9 +168,10 @@ namespace memory
         }
 
         // Restrict VRAM/OAM access during PPU Mode 3 (drawing)
-        if (ppu && ppu->getMode() == ::ppu::Mode::DRAWING &&
-            ((address >= 0x8000 && address < 0xA000) || (address >= 0xFE00 && address < 0xFEA0))) {
-            return 0xFF;
+        // Address range check first (fast) — only dereference ppu for VRAM/OAM addresses
+        if (UNLIKELY((address >= 0x8000 && address < 0xA000) || (address >= 0xFE00 && address < 0xFEA0))) {
+            if (ppu && ppu->getMode() == ::ppu::Mode::DRAWING)
+                return 0xFF;
         }
 
         // Taille réelle du segment "extended" (banks >= 2).
@@ -657,6 +660,12 @@ namespace memory
                         // BGPD: BG palette data
                         uint8_t idx = bg_palette_index & 0x3F;
                         bg_palette_ram[idx] = value;
+                        // Update RGB565 cache: each entry is 2 bytes (lo=even, hi=odd)
+                        if ((idx & 1) == 1) {  // hi byte just written → entry is complete
+                            uint8_t pal = (idx >> 1) >> 2;   // palette 0-7
+                            uint8_t col = (idx >> 1) & 0x03; // color 0-3
+                            bg_pal_cache[pal][col] = cgb_pal_to_rgb565(bg_palette_ram[idx - 1], value);
+                        }
                         if (bg_palette_index & 0x80) {
                             bg_palette_index = (bg_palette_index & 0x80) | ((idx + 1) & 0x3F);
                         }
@@ -669,6 +678,12 @@ namespace memory
                         // OBPD: OBJ palette data
                         uint8_t idx = obj_palette_index & 0x3F;
                         obj_palette_ram[idx] = value;
+                        // Update RGB565 cache
+                        if ((idx & 1) == 1) {
+                            uint8_t pal = (idx >> 1) >> 2;
+                            uint8_t col = (idx >> 1) & 0x03;
+                            obj_pal_cache[pal][col] = cgb_pal_to_rgb565(obj_palette_ram[idx - 1], value);
+                        }
                         if (obj_palette_index & 0x80) {
                             obj_palette_index = (obj_palette_index & 0x80) | ((idx + 1) & 0x3F);
                         }
@@ -764,6 +779,14 @@ namespace memory
                  // Initialize BG palette to white (CGB post-boot has white palette 0)
                  memset(bg_palette_ram, 0xFF, sizeof(bg_palette_ram));
                  memset(obj_palette_ram, 0xFF, sizeof(obj_palette_ram));
+                 // Pre-warm palette RGB565 cache from initial palette RAM (all 0xFF = white)
+                 for (int p = 0; p < 8; ++p)
+                     for (int c = 0; c < 4; ++c) {
+                         uint8_t lo = bg_palette_ram[p * 8 + c * 2];
+                         uint8_t hi = bg_palette_ram[p * 8 + c * 2 + 1];
+                         bg_pal_cache[p][c] = cgb_pal_to_rgb565(lo, hi);
+                         obj_pal_cache[p][c] = cgb_pal_to_rgb565(lo, hi);
+                     }
                  ESP_LOGI("MemoryBus", "CGB I/O registers initialized to post-boot state");
              }
 
@@ -787,18 +810,28 @@ namespace memory
         size_t base_size = (size > rom.size()) ? rom.size() : size;
         std::memcpy(rom.data(), data, base_size);
 
-        // Load remaining banks into extended ROM (PSRAM)
-        if (size > rom.size() && rom_extended) {
+        // Load remaining banks into extended ROM (PSRAM), allocated to exact ROM size
+        if (size > rom.size()) {
             size_t extra_size = size - rom.size();
-            size_t max_extended = 0x800000;  // 8MB — MBC5 maximum, covers all GB/GBC games
-            size_t copy_size = (extra_size > max_extended) ? max_extended : extra_size;
 
-            std::memcpy(rom_extended, data + rom.size(), copy_size);
+            // Free previous allocation if any (e.g. loading a second game)
+            if (rom_extended) {
+                heap_caps_free(rom_extended);
+                rom_extended = nullptr;
+            }
 
-            size_t num_banks = copy_size / 0x4000;
-            ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks (%zu KB) into PSRAM",
-                     num_banks, copy_size / 1024);
-        } else if (size <= rom.size()) {
+            rom_extended = static_cast<uint8_t*>(
+                heap_caps_malloc(extra_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+            if (!rom_extended) {
+                ESP_LOGE("MemoryBus", "Failed to allocate %zu KB for extended ROM in PSRAM!", extra_size / 1024);
+            } else {
+                std::memcpy(rom_extended, data + rom.size(), extra_size);
+                size_t num_banks = extra_size / 0x4000;
+                ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks (%zu KB) into PSRAM",
+                         num_banks, extra_size / 1024);
+            }
+        } else {
             ESP_LOGI("MemoryBus", "ROM fits in base 32KB, no extended banks needed");
         }
 
