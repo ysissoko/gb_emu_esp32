@@ -56,7 +56,7 @@ namespace display
         // Configure backlight (BLK)
         gpio_config_t bk_gpio_config = {};
         bk_gpio_config.mode = GPIO_MODE_OUTPUT;
-        bk_gpio_config.pin_bit_mask = 1ULL << 12; // LCD_BL
+        bk_gpio_config.pin_bit_mask = 1ULL << gpio::LCD_BL; // LCD_BL
         bk_gpio_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
         bk_gpio_config.pull_up_en = GPIO_PULLUP_DISABLE;
         gpio_config(&bk_gpio_config);
@@ -123,9 +123,8 @@ namespace display
         esp_lcd_panel_mirror(panel, false, false); // No mirroring
 
         ESP_LOGI("LCD", "Activating color inversion (matching example code)...");
-        // Example code calls 0x21 (INVON) twice (lines 87 and 164)
         // This inverts display colors - RGB becomes BGR effectively
-        esp_lcd_panel_invert_color(panel, false); // Enable inversion like example
+        esp_lcd_panel_invert_color(panel, true);
 
         // For ST7789V, we might need to configure RGB/BGR order
         // Some modules use BGR instead of RGB
