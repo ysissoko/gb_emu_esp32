@@ -282,7 +282,7 @@ namespace ppu
         if (LIKELY(!cgb_mode)) {
             // DMG: LCDC.0=0 disables BG and Window → fill line with BGP color 0 (white)
             if (UNLIKELY(!(ctx.lcdc & LCDC_BG_WINDOW_ENABLE))) {
-                const uint16_t white = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+                const uint16_t white = dmgPalette()[(ctx.bgp >> 0) & 0x03];
                 uint16_t* row = framebuffer + fb_row;
                 for (int x = 0; x < display::LCD_WIDTH; ++x) row[x] = white;
                 return;
@@ -290,10 +290,10 @@ namespace ppu
 
             // --- DMG fast path ---
             uint16_t palette_lut[4];
-            palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
-            palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
-            palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
-            palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
+            palette_lut[0] = dmgPalette()[(ctx.bgp >> 0) & 0x03];
+            palette_lut[1] = dmgPalette()[(ctx.bgp >> 2) & 0x03];
+            palette_lut[2] = dmgPalette()[(ctx.bgp >> 4) & 0x03];
+            palette_lut[3] = dmgPalette()[(ctx.bgp >> 6) & 0x03];
 
             int screen_x = 0;
             for (int tile = 0; tile < num_tiles && screen_x < display::LCD_WIDTH; ++tile)
@@ -426,10 +426,10 @@ namespace ppu
 
             // --- DMG fast path ---
             uint16_t palette_lut[4];
-            palette_lut[0] = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
-            palette_lut[1] = GB_PALETTE_BGR565[(ctx.bgp >> 2) & 0x03];
-            palette_lut[2] = GB_PALETTE_BGR565[(ctx.bgp >> 4) & 0x03];
-            palette_lut[3] = GB_PALETTE_BGR565[(ctx.bgp >> 6) & 0x03];
+            palette_lut[0] = dmgPalette()[(ctx.bgp >> 0) & 0x03];
+            palette_lut[1] = dmgPalette()[(ctx.bgp >> 2) & 0x03];
+            palette_lut[2] = dmgPalette()[(ctx.bgp >> 4) & 0x03];
+            palette_lut[3] = dmgPalette()[(ctx.bgp >> 6) & 0x03];
 
             for (int x = std::max(0, win_x_start); x < display::LCD_WIDTH; x += 8)
             {
@@ -602,15 +602,15 @@ namespace ppu
         // Pre-calculate sprite palettes
         uint16_t palette_lut0[4], palette_lut1[4];
         palette_lut0[0] = palette_lut1[0] = 0;  // Color 0 is always transparent
-        palette_lut0[1] = GB_PALETTE_BGR565[(ctx.obp0 >> 2) & 0x03];
-        palette_lut0[2] = GB_PALETTE_BGR565[(ctx.obp0 >> 4) & 0x03];
-        palette_lut0[3] = GB_PALETTE_BGR565[(ctx.obp0 >> 6) & 0x03];
-        palette_lut1[1] = GB_PALETTE_BGR565[(ctx.obp1 >> 2) & 0x03];
-        palette_lut1[2] = GB_PALETTE_BGR565[(ctx.obp1 >> 4) & 0x03];
-        palette_lut1[3] = GB_PALETTE_BGR565[(ctx.obp1 >> 6) & 0x03];
+        palette_lut0[1] = dmgPalette()[(ctx.obp0 >> 2) & 0x03];
+        palette_lut0[2] = dmgPalette()[(ctx.obp0 >> 4) & 0x03];
+        palette_lut0[3] = dmgPalette()[(ctx.obp0 >> 6) & 0x03];
+        palette_lut1[1] = dmgPalette()[(ctx.obp1 >> 2) & 0x03];
+        palette_lut1[2] = dmgPalette()[(ctx.obp1 >> 4) & 0x03];
+        palette_lut1[3] = dmgPalette()[(ctx.obp1 >> 6) & 0x03];
 
         // Background color 0 for DMG sprite priority check (CGB uses bg_color_index[])
-        const uint16_t bg_color = GB_PALETTE_BGR565[(ctx.bgp >> 0) & 0x03];
+        const uint16_t bg_color = dmgPalette()[(ctx.bgp >> 0) & 0x03];
 
         for (int i = visible_sprite_count - 1; i >= 0; --i)
         {
@@ -728,10 +728,13 @@ namespace ppu
                 // La framebuffer est en RAM interne, mais le LCD DMA ne lit pas la PSRAM;
                 // votre LCDDisplay fait déjà le chunk/copie DMA interne si besoin.
 
-                // Center Game Boy display (160x144) on LCD screen (240x320)
-                constexpr int offset_x = (display::SCREEN_WIDTH - display::LCD_WIDTH) >> 1;   // (240-160)/2 = 40
-                constexpr int offset_y = (display::SCREEN_HEIGHT - display::LCD_HEIGHT) >> 1; // (320-144)/2 = 88
-                ppu->display->renderFrameRGB565(frame, display::LCD_WIDTH, display::LCD_HEIGHT, offset_x, offset_y);
+                // Scale Game Boy display 1.5× (160×144 → 240×216), centered on 240×240 LCD
+                constexpr int scaled_w = display::SCREEN_WIDTH;  // 240
+                constexpr int scaled_h = (display::LCD_HEIGHT * display::SCREEN_WIDTH) / display::LCD_WIDTH; // 216
+                constexpr int offset_x = 0;
+                constexpr int offset_y = (display::SCREEN_HEIGHT - scaled_h) >> 1;  // (240-216)/2 = 12
+                ppu->display->renderFrameRGB565(frame, scaled_w, scaled_h, offset_x, offset_y,
+                                                display::LCD_WIDTH, display::LCD_HEIGHT);
             }
         }
     }

@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "esp_heap_caps.h"
+#include "driver/ledc.h"
 
 namespace display
 {
@@ -53,14 +54,24 @@ namespace display
         gpio_set_level(gpio::LCD_CS, 1);
 
         // ESP32-S3 compatible GPIO mapping
-        // Configure backlight (BLK)
-        gpio_config_t bk_gpio_config = {};
-        bk_gpio_config.mode = GPIO_MODE_OUTPUT;
-        bk_gpio_config.pin_bit_mask = 1ULL << gpio::LCD_BL; // LCD_BL
-        bk_gpio_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-        bk_gpio_config.pull_up_en = GPIO_PULLUP_DISABLE;
-        gpio_config(&bk_gpio_config);
-        gpio_set_level(gpio::LCD_BL, 1); // Turn on backlight
+        // Configure backlight via LEDC PWM (~70% duty cycle)
+        ledc_timer_config_t ledc_timer = {};
+        ledc_timer.speed_mode      = LEDC_LOW_SPEED_MODE;
+        ledc_timer.duty_resolution = LEDC_TIMER_8_BIT;
+        ledc_timer.timer_num       = LEDC_TIMER_0;
+        ledc_timer.freq_hz         = 5000;
+        ledc_timer.clk_cfg         = LEDC_AUTO_CLK;
+        ledc_timer_config(&ledc_timer);
+
+        ledc_channel_config_t ledc_channel = {};
+        ledc_channel.gpio_num   = gpio::LCD_BL;
+        ledc_channel.speed_mode = LEDC_LOW_SPEED_MODE;
+        ledc_channel.channel    = LEDC_CHANNEL_0;
+        ledc_channel.intr_type  = LEDC_INTR_DISABLE;
+        ledc_channel.timer_sel  = LEDC_TIMER_0;
+        ledc_channel.duty       = 178; // ~70% of 255
+        ledc_channel.hpoint     = 0;
+        ledc_channel_config(&ledc_channel);
 
         // Note: SPI bus is initialized in main.cpp and shared with SD card
 
@@ -122,8 +133,6 @@ namespace display
         esp_lcd_panel_swap_xy(panel, false);      // No XY swap (portrait mode)
         esp_lcd_panel_mirror(panel, false, false); // No mirroring
 
-        ESP_LOGI("LCD", "Activating color inversion (matching example code)...");
-        // This inverts display colors - RGB becomes BGR effectively
         esp_lcd_panel_invert_color(panel, true);
 
         // For ST7789V, we might need to configure RGB/BGR order
@@ -168,7 +177,9 @@ namespace display
                                   int width,
                                   int height,
                                   int offset_x,
-                                  int offset_y)
+                                  int offset_y,
+                                  int src_width,
+                                  int src_height)
     {
         static const char *TAG_LCD = "LCD_render";
 
@@ -177,6 +188,11 @@ namespace display
             ESP_LOGE(TAG_LCD, "Invalid buffer or dimensions");
             return;
         }
+
+        // Resolve source dimensions (0 = no scaling, source == destination)
+        const int in_w = (src_width  > 0) ? src_width  : width;
+        const int in_h = (src_height > 0) ? src_height : height;
+        const bool scaling = (in_w != width || in_h != height);
 
         int draw_width = (offset_x + width > SCREEN_WIDTH)
                              ? (SCREEN_WIDTH - offset_x)
@@ -194,7 +210,7 @@ namespace display
         constexpr size_t MAX_DMA_BYTES = 4092;
         size_t total_bytes = draw_width * draw_height * sizeof(uint16_t);
 
-        if (total_bytes <= MAX_DMA_BYTES)
+        if (!scaling && total_bytes <= MAX_DMA_BYTES)
         {
             waitForTransfer(); // s'assurer qu'aucun DMA précédent n'est actif
 
@@ -216,42 +232,46 @@ namespace display
 
         int buf = 0;
         bool first = true;
-        int source_y = 0; // Position réelle dans le buffer source
-        
-        for (int y = 0; y < draw_height; y += CHUNK_LINES)
-        {
+        int out_y = 0; // Output line counter
 
-            int lines = std::min(CHUNK_LINES, draw_height - y);
-            
-            // CORRECTION CRITIQUE: Utiliser source_y pour le calcul du buffer
-            const uint16_t *src = buffer + source_y * width;
-            size_t chunk_bytes = draw_width * lines * sizeof(uint16_t);
-            
-            // Préparer le buffer courant PENDANT que le DMA précédent tourne
-            memcpy(rgb565_chunk[buf], src, chunk_bytes);
-            
-            // Si ce N'EST PAS le premier chunk, attendre que l'autre buffer soit libéré
+        for (; out_y < draw_height; out_y += CHUNK_LINES)
+        {
+            int lines = std::min(CHUNK_LINES, draw_height - out_y);
+
+            // Prepare chunk — scale or copy
+            if (scaling) {
+                for (int line = 0; line < lines; ++line) {
+                    int y_src = (out_y + line) * in_h / height;
+                    const uint16_t* src_row = buffer + y_src * in_w;
+                    uint16_t* dst_row = rgb565_chunk[buf] + line * draw_width;
+                    for (int x = 0; x < draw_width; ++x) {
+                        dst_row[x] = src_row[x * in_w / draw_width];
+                    }
+                }
+            } else {
+                const uint16_t *src = buffer + out_y * width;
+                memcpy(rgb565_chunk[buf], src, draw_width * lines * sizeof(uint16_t));
+            }
+
+            // Wait for previous DMA before kicking off next transfer
             if (!first)
             {
                 waitForTransfer();
             }
             first = false;
-            
-            // AVANCER source_y pour le prochain chunk
-            source_y += lines;
 
             esp_err_t ret = esp_lcd_panel_draw_bitmap(
                 panel,
                 offset_x,
-                offset_y + y,
+                offset_y + out_y,
                 offset_x + draw_width,
-                offset_y + y + lines,
+                offset_y + out_y + lines,
                 rgb565_chunk[buf]);
 
             if (ret != ESP_OK)
             {
                 ESP_LOGE(TAG_LCD, "chunk draw failed at y=%d: %s",
-                         y, esp_err_to_name(ret));
+                         out_y, esp_err_to_name(ret));
                 return;
             }
 

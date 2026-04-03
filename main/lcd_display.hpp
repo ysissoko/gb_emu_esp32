@@ -16,9 +16,9 @@ namespace display
 
     constexpr int LCD_WIDTH = 160; // The original gameboy screen width
     constexpr int LCD_HEIGHT = 144; // The original gameboy screen height
-    constexpr int SPI_CLK_FREQ_MHZ = 60; // SPI clock set in mhz
+    constexpr int SPI_CLK_FREQ_MHZ = 80; // SPI clock set in mhz
 
-    static constexpr int CHUNK_LINES = 8;
+    static constexpr int CHUNK_LINES = 48;
     static constexpr int CHUNK_PIXELS = SCREEN_WIDTH * CHUNK_LINES;  // Must fit full screen width (menu)
 
     // Pixel color (Game Boy has 4 shades of gray)
@@ -47,7 +47,7 @@ namespace display
          * @param offset_x the x offset on the LCD to start rendering
          * @param offset_y the y offset on the LCD to start rendering
          */
-        void renderFrameRGB565(const uint16_t* buffer, int width, int height, int offset_x = 0, int offset_y = 0);
+        void renderFrameRGB565(const uint16_t* buffer, int width, int height, int offset_x = 0, int offset_y = 0, int src_width = 0, int src_height = 0);
                 
     private:
         uint32_t frame_times[10]{0};  // Historique pour adaptation
@@ -61,9 +61,9 @@ namespace display
         // semaphore for DMA transfer tracking
         SemaphoreHandle_t dma_done_sem;
 
-        // Chunked transfer: small RGB565 buffer in internal SRAM (fast)
-        static constexpr int CHUNK_LINES = 8;  // Transfer 8 lines at a time (optimized for pipeline)
-        static uint16_t rgb565_chunk[2][CHUNK_PIXELS];  // 160×8×2 = 2.56 KB ultra-fast!
+        // Chunked transfer: RGB565 buffer in internal SRAM (fast)
+        static constexpr int CHUNK_LINES = 48; // Transfer 48 lines at a time: 3 chunks for 144-line GB frame
+        static uint16_t rgb565_chunk[2][CHUNK_PIXELS];  // 240×48×2 = ~23 KB per buffer (double-buffered)
 
         // Callback for DMA completion
         static bool lcd_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
