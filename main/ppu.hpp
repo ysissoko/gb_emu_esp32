@@ -82,13 +82,9 @@ namespace ppu
         uint8_t r = (color >> 0) & 0x1F;
         uint8_t g = (color >> 5) & 0x1F;
         uint8_t b = (color >> 10) & 0x1F;
-        // GBC color correction: mix channels like the original GBC LCD filter matrix
-        // Each output channel is a weighted sum of all input channels (5-bit → 5-bit)
-        uint8_t R = static_cast<uint8_t>(std::min(31, (r * 26 + g * 4 + b * 2) >> 5));
-        uint8_t G = static_cast<uint8_t>(std::min(31, (g * 24 + b * 8         ) >> 5));
-        uint8_t B = static_cast<uint8_t>(std::min(31, (r * 6  + g * 4 + b * 22) >> 5));
-        // 5-bit green → 6-bit: replicate MSB as LSB
-        return static_cast<uint16_t>((R << 11) | (((G << 1) | (G >> 4)) << 5) | B);
+        // BGR565: B in bits 15:11, G in bits 10:6, R in bits 4:0
+        // Panel is physically BGR-wired: MADCTL=0x00 R-channel → physical B subpixel, B-channel → physical R subpixel
+        return static_cast<uint16_t>((b << 11) | (g << 6) | r);
     }
 
     // Cached PPU register context for scanline rendering (avoid repeated MMU reads)
@@ -165,13 +161,16 @@ namespace ppu
         // Allocated in INTERNAL RAM for fast access (DMA-compatible)
         uint16_t* framebuffer{nullptr};
 
-        // Optimized palette lookup table (converted RGB565 to BGR565 for ST7789V)
+        // 4-color palette for DMG and CGB games
         static constexpr uint16_t GB_PALETTE_BGR565[4] = {
             ppu::rgb_to_bgr565(0xFFFF), // WHITE
             ppu::rgb_to_bgr565(0xC618), // LIGHT_GRAY
             ppu::rgb_to_bgr565(0x632C), // DARK_GRAY
             ppu::rgb_to_bgr565(0x0000)  // BLACK
         };
+        inline const uint16_t* dmgPalette() const {
+            return GB_PALETTE_BGR565;
+        }
 
         // PPU state
         Mode mode;

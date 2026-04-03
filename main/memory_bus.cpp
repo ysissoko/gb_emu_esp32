@@ -24,10 +24,8 @@ namespace memory
         uint8_t r = (color >> 0) & 0x1F;
         uint8_t g = (color >> 5) & 0x1F;
         uint8_t b = (color >> 10) & 0x1F;
-        uint8_t R = static_cast<uint8_t>(std::min(31, (r * 26 + g * 4 + b * 2) >> 5));
-        uint8_t G = static_cast<uint8_t>(std::min(31, (g * 24 + b * 8         ) >> 5));
-        uint8_t B = static_cast<uint8_t>(std::min(31, (r * 6  + g * 4 + b * 22) >> 5));
-        return static_cast<uint16_t>((R << 11) | (((G << 1) | (G >> 4)) << 5) | B);
+        // BGR565: B in bits 15:11, G in bits 10:6, R in bits 4:0 — panel is physically BGR-wired
+        return static_cast<uint16_t>((b << 11) | (g << 6) | r);
     }
     MemoryBus::MemoryBus(const std::shared_ptr<controller::Joypad>& joypad)
         : rom{0}, vram{0}, wram{0},
