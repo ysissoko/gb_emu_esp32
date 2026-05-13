@@ -87,6 +87,7 @@ namespace ppu
             // Update LY to 0 and STAT mode bits directly — without triggering STAT interrupts.
             // On real hardware, STAT interrupts are suppressed while the LCD is disabled.
             ly = 0;
+            mmu.write(0xFF44, 0);
             const uint8_t lyc_off = mmu.read(0xFF45);
             uint8_t stat_off = mmu.read(0xFF41);
             stat_off &= 0xFC;  // mode = 0 (HBlank)
