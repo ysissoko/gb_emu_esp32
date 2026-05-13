@@ -152,6 +152,9 @@ namespace memory
         // Reset DIV counter (e.g. on STOP / speed switch)
         void resetDIV();
 
+        // Update KEY1 bit 7 after a CGB speed switch (bypasses the software write mask)
+        void applySpeedSwitch(bool double_speed);
+
         // Called by PPU when entering HBlank — copies next 16-byte HDMA block if active
         void hdmaHBlankStep();
         bool isHDMAActive() const { return hdma_active; }

@@ -468,8 +468,7 @@ namespace cpu
                 uint8_t key1 = mmu.read(0xFF4D);
                 if (key1 & 0x01) {
                     double_speed = !double_speed;
-                    // Write back: bit 7 = current speed, bits 6-1 = 1, bit 0 = 0 (switch consumed)
-                    mmu.write(0xFF4D, double_speed ? 0xFE : 0x7E);
+                    mmu.applySpeedSwitch(double_speed);
                     // Reset DIV on speed switch (Pan Docs: "DIV is reset when executing STOP")
                     mmu.resetDIV();
                     ESP_LOGI("CPU", "CGB speed switch: %s", double_speed ? "DOUBLE" : "NORMAL");

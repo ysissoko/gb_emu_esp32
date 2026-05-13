@@ -902,6 +902,12 @@ namespace memory
     {
         if (timer) timer->writeDIV(0);
     }
+
+    void MemoryBus::applySpeedSwitch(bool ds)
+    {
+        if (!cgb_mode) return;
+        io_registers[0x4D] = ds ? 0xFE : 0x7E;
+    }
     std::string MemoryBus::getSerialDebugOutput() const
     {
         if (serial)
