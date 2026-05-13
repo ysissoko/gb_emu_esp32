@@ -158,25 +158,36 @@ namespace memory
         ESP_LOGI("MemoryBus", "I/O registers initialized to post-bootrom state");
     }
 
-    uint8_t MemoryBus::read(uint16_t address) const
-    {
-        // Boot ROM (0x0000-0x00FF) if enabled
-        if (bootEnabled && address < 0x0100) {
-            return memory::BOOT_ROM[address];
-        }
+    void MemoryBus::updateROMBankCache() {
+        uint16_t bank = rom_bank & rom_bank_mask;
+        if (bank == 0 && mbc_type != 5) bank = 1;
 
+        if (bank == 0) {
+            memcpy(rom_bank_cache, rom.data(), 0x4000);
+        } else if (bank == 1) {
+            memcpy(rom_bank_cache, rom.data() + 0x4000, 0x4000);
+        } else if (rom_extended) {
+            const size_t offset = static_cast<size_t>(bank - 2) * 0x4000;
+            if (offset < rom_extended_size)
+                memcpy(rom_bank_cache, rom_extended + offset, 0x4000);
+        }
+    }
+
+    void MemoryBus::updateWRAMBankCache() {
+        if (!wram_extra || wram_bank < 2) return;
+        const size_t offset = static_cast<size_t>(wram_bank - 2) * 0x1000;
+        memcpy(wram_bank_cache, wram_extra + offset, 0x1000);
+    }
+
+    // readSlow: handles all addresses not covered by the inline fast paths in the header.
+    uint8_t MemoryBus::readSlow(uint16_t address) const
+    {
         // Restrict VRAM/OAM access during PPU Mode 3 (drawing)
-        // Address range check first (fast) — only dereference ppu for VRAM/OAM addresses
         if (UNLIKELY((address >= 0x8000 && address < 0xA000) || (address >= 0xFE00 && address < 0xFEA0))) {
             if (ppu && ppu->getMode() == ::ppu::Mode::DRAWING)
                 return 0xFF;
         }
 
-        // Taille réelle du segment "extended" (banks >= 2).
-        // Robustesse: éviter tout underflow si rom_size < 0x8000.
-        const size_t extended_size = (rom_size > 0x8000) ? (rom_size - 0x8000) : 0;
-
-        // Optimized: Use high nibble (top 4 bits) for fast region lookup
         switch (address >> 12) {  // Get top 4 bits (0x0-0xF)
             case 0x0: case 0x1: case 0x2: case 0x3:
                 // ROM Bank 0 (0x0000-0x3FFF)
@@ -185,43 +196,8 @@ namespace memory
                 return rom[address];
 
             case 0x4: case 0x5: case 0x6: case 0x7:
-            {
-                // ROM Bank N (0x4000-0x7FFF) - switchable bank
-
-                // ROM ONLY / pas de ROM extended / ROM <= 32KB
-                if (UNLIKELY(mbc_type == 0 || !rom_extended || extended_size == 0)) {
-                    // Dans ce cas, tout est dans rom[]
-                    return rom[address];
-                }
-
-                // IMPORTANT: Ne PAS masquer rom_bank en MBC1 mode 1 ici.
-                // La zone 0x4000-0x7FFF utilise la banque ROM "complète".
-                uint16_t bank = rom_bank;
-
-                // Bank 0 is forbidden for MBC1/2/3 in the switchable area, but MBC5 allows it
-                if (bank == 0 && mbc_type != 5) bank = 1;
-
-                // MBC5 allows bank 0 in the switchable area; map back to the bank-0 slice of rom[].
-                if (bank == 0) {
-                    return rom[address - 0x4000];
-                }
-
-                // Bank 1 est déjà dans rom[] (0x4000-0x7FFF)
-                if (bank == 1) {
-                    return rom[address];
-                }
-
-                // Banks >= 2 sont dans rom_extended, avec TON layout:
-                // rom_extended[0] => bank 2
-                // rom_extended[0x4000] => bank 3
-                const size_t bank_index = static_cast<size_t>(bank - 2);
-                const size_t offset = bank_index * 0x4000 + (address - 0x4000);
-
-                if (LIKELY(offset < extended_size)) {
-                    return rom_extended[offset];
-                }
-                return 0xFF;
-            }
+                // ROM Bank N (0x4000-0x7FFF) — always served from DRAM cache
+                return rom_bank_cache[address - 0x4000];
 
             case 0x8: case 0x9:
                 // Video RAM (0x8000-0x9FFF)
@@ -282,11 +258,9 @@ namespace memory
                     // CGB: 0xD000-0xDFFF = switchable bank (wram_bank 1-7)
                     if (wram_bank == 1) {
                         return wram[address - WRAM_START];  // bank 1 = wram[0x1000-0x1FFF]
-                    } else if (wram_extra) {
-                        size_t offset = (wram_bank - 2) * 0x1000 + (address - 0xD000);
-                        return wram_extra[offset];
+                    } else {
+                        return wram_bank_cache[address - 0xD000];  // banks 2-7: DRAM cache
                     }
-                    return 0xFF;
                 }
                 return wram[address - WRAM_START];
 
@@ -430,6 +404,7 @@ namespace memory
                         uint8_t bank = value & 0x0F;  // 4-bit bank number
                         if (bank == 0) bank = 1;
                         rom_bank = bank;
+                        updateROMBankCache();
                     }
                 }
                 else if (mbc_type == 1) {
@@ -438,12 +413,14 @@ namespace memory
                     if (UNLIKELY(bank == 0)) bank = 1;  // Bank 0 forbidden
                     rom_bank = (rom_bank & 0xE0) | bank;
                     rom_bank &= rom_bank_mask;  // Mask to valid banks
+                    updateROMBankCache();
                 } else if (mbc_type == 3) {
                     // MBC3: 7-bit bank number (0x01-0x7F), set directly
                     uint8_t bank = value & 0x7F;
                     if (UNLIKELY(bank == 0)) bank = 1;  // Bank 0 forbidden
                     rom_bank = bank;
                     rom_bank &= rom_bank_mask;  // Mask to valid banks
+                    updateROMBankCache();
                 } else if (mbc_type == 5) {
                     // MBC5: 0x2000-0x2FFF = lower 8 bits; 0x3000-0x3FFF = bit 8
                     if ((address >> 12) == 0x2) {
@@ -452,6 +429,7 @@ namespace memory
                         rom_bank = (rom_bank & 0xFF) | ((value & 0x01) << 8);
                     }
                     rom_bank &= rom_bank_mask;
+                    updateROMBankCache();
                 }
                 return;
 
@@ -463,6 +441,7 @@ namespace memory
                         // ROM banking mode: upper 2 bits of ROM bank
                         rom_bank = (rom_bank & 0x1F) | ((value & 0x03) << 5);
                         rom_bank &= rom_bank_mask;  // Mask to valid banks
+                        updateROMBankCache();
                     } else {
                         // RAM banking mode
                         ram_bank = value & 0x03;
@@ -498,6 +477,7 @@ namespace memory
                 // Video RAM (0x8000-0x9FFF)
                 if (cgb_mode && vram_bank == 1 && vram_bank1) {
                     vram_bank1[address - VRAM_START] = value;
+                    vram_bank1_cache[address - VRAM_START] = value;  // write-through to DRAM cache
                 } else {
                     vram[address - VRAM_START] = value;
                 }
@@ -551,6 +531,7 @@ namespace memory
                     } else if (wram_extra) {
                         size_t offset = (wram_bank - 2) * 0x1000 + (address - 0xD000);
                         wram_extra[offset] = value;
+                        wram_bank_cache[address - 0xD000] = value;  // write-through to DRAM cache
                     }
                 } else {
                     wram[address - WRAM_START] = value;
@@ -635,7 +616,6 @@ namespace memory
                             // General Purpose DMA: terminate any active HBlank DMA, then copy all at once
                             if (hdma_active) {
                                 hdma_active = false;
-                                // FF55 bit 7=1 means "inactive"; lower 7 bits = remaining blocks
                                 io_registers[0x55] = 0x80 | hdma_remaining;
                                 return;
                             }
@@ -701,6 +681,7 @@ namespace memory
                         io_registers[0x70] = value & 0x07;  // store raw written value
                         wram_bank = io_registers[0x70];
                         if (wram_bank == 0) wram_bank = 1;
+                        updateWRAMBankCache();
                     }
                     else {
                         io_registers[address - IO_REGISTERS_START] = value;
@@ -738,9 +719,10 @@ namespace memory
         write(address + 1, msb);
     }
 
-    void memory::MemoryBus::loadROM(const uint8_t* data, size_t size)
+    void memory::MemoryBus::loadROM(const uint8_t* data, size_t size, bool skip_extended_copy)
     {
         rom_size = size;
+        rom_extended_size = (size > 0x8000) ? (size - 0x8000) : 0;
 
         // Detect MBC type from ROM header (0x0147)
         if (size >= 0x150) {
@@ -834,9 +816,12 @@ namespace memory
             if (!rom_extended) {
                 ESP_LOGE("MemoryBus", "Failed to allocate %zu KB for extended ROM in PSRAM!", extra_size / 1024);
             } else {
-                std::memcpy(rom_extended, data + rom.size(), extra_size);
+                if (!skip_extended_copy) {
+                    std::memcpy(rom_extended, data + rom.size(), extra_size);
+                }
                 size_t num_banks = extra_size / 0x4000;
-                ESP_LOGI("MemoryBus", "Loaded %zu additional ROM banks (%zu KB) into PSRAM",
+                ESP_LOGI("MemoryBus", "%s %zu additional ROM banks (%zu KB) into PSRAM",
+                         skip_extended_copy ? "Allocated" : "Loaded",
                          num_banks, extra_size / 1024);
             }
         } else {
@@ -873,6 +858,7 @@ namespace memory
         ram_enabled = false;
         ram_bank = 0;
         mbc_mode = 0;
+        updateROMBankCache();  // Populate DRAM cache for initial bank 1
 
         // Initialize RTC (MBC3)
         if (mbc_type == 3) {
@@ -888,6 +874,42 @@ namespace memory
         // Boot ROM is disabled, I/O registers already initialized in constructor
         ESP_LOGI("MemoryBus", "ROM loaded successfully: %zu KB total, MBC%d, battery=%d",
                  rom_size / 1024, mbc_type, has_battery);
+    }
+
+    // loadROMFromFile: reads ROM directly into rom[] and rom_extended (PSRAM),
+    // avoiding a 2× peak PSRAM allocation that would occur with a full intermediate buffer.
+    void MemoryBus::loadROMFromFile(const char* path, size_t file_size)
+    {
+        FILE* f = fopen(path, "rb");
+        if (!f) {
+            ESP_LOGE("MemoryBus", "loadROMFromFile: cannot open %s", path);
+            return;
+        }
+
+        // Static buffer for the first 32KB — avoids stack overflow (task stack is only 8KB)
+        static uint8_t header_buf[0x8000];
+        size_t header_bytes = std::min(file_size, (size_t)0x8000);
+        memset(header_buf, 0, sizeof(header_buf));
+        fread(header_buf, 1, header_bytes, f);
+
+        // loadROM with skip_extended_copy=true: sets up MBC/CGB metadata and allocates
+        // rom_extended in PSRAM, but skips the memcpy (data only has 32KB).
+        loadROM(header_buf, file_size, /*skip_extended_copy=*/true);
+
+        // Fill rom_extended directly from the file — no intermediate buffer needed
+        if (file_size > 0x8000 && rom_extended && rom_extended_size > 0) {
+            // File cursor is already past the first 32KB (fread advanced it)
+            size_t bytes_read = fread(rom_extended, 1, rom_extended_size, f);
+            if (bytes_read != rom_extended_size) {
+                ESP_LOGW("MemoryBus", "loadROMFromFile: read %zu/%zu extended bytes",
+                         bytes_read, rom_extended_size);
+            }
+            // Refresh ROM bank cache now that extended ROM data is correct
+            updateROMBankCache();
+            ESP_LOGI("MemoryBus", "ROM extended loaded directly from file (%zu KB)", bytes_read / 1024);
+        }
+
+        fclose(f);
     }
 
     void MemoryBus::stepTimer(uint8_t cycles)

@@ -109,11 +109,12 @@ namespace emulator
         int rendered_frames = 0;
         int skipped_frames = 0;
 
-        // Save system: auto-save every 30 seconds if dirty
-        int64_t last_autosave_time = esp_timer_get_time();
-        constexpr int64_t AUTOSAVE_INTERVAL_US = 30 * 1000000; // 30 seconds
+        // Emulation FPS counter (Core 1 side — independent of LCD render)
+        int64_t emu_fps_last_time = esp_timer_get_time();
+        int emu_fps_count = 0;
+        int64_t emu_frame_time_sum = 0;  // total emulation time (µs) over last second
 
-        // Manual save: SELECT+START held for 2 seconds
+        // Manual save: SELECT+START held for 2 seconds (no autosave — avoids SPI contention)
         int select_start_hold_frames = 0;
         constexpr int SAVE_HOLD_FRAMES = 120; // ~2 seconds at 60 FPS
         bool save_triggered = false;
@@ -135,38 +136,20 @@ namespace emulator
             // Update RTC (Real-Time Clock for MBC3)
             emulator->mmu->updateRTC();
 
-            // Manual save trigger: SELECT + START held for 2 seconds
+            // Manual save: SELECT+START held for ~2 seconds
             bool select_pressed = emulator->joypad->buttonSelectPressed();
-            bool start_pressed = emulator->joypad->buttonStartPressed();
+            bool start_pressed  = emulator->joypad->buttonStartPressed();
 
-            if (select_pressed && start_pressed)
-            {
+            if (select_pressed && start_pressed) {
                 select_start_hold_frames++;
-                if (select_start_hold_frames == SAVE_HOLD_FRAMES && !save_triggered)
-                {
-                    // Trigger manual save
-                    ESP_LOGI(TAG, "Manual save triggered (SELECT+START held)");
-                    emulator->mmu->requestSave();
+                if (select_start_hold_frames == SAVE_HOLD_FRAMES && !save_triggered) {
+                    ESP_LOGI(TAG, "Saving SRAM...");
+                    emulator->mmu->saveSRAM();
                     save_triggered = true;
                 }
-            }
-            else
-            {
+            } else {
                 select_start_hold_frames = 0;
                 save_triggered = false;
-            }
-
-            // Auto-save every 30 seconds if SRAM is dirty
-            int64_t current_time = esp_timer_get_time();
-            if (current_time - last_autosave_time >= AUTOSAVE_INTERVAL_US)
-            {
-                last_autosave_time = current_time;
-                // Only save if SRAM was modified
-                if (emulator->mmu->isSRAMDirty())
-                {
-                    ESP_LOGI(TAG, "Auto-save triggered (30s interval)");
-                    emulator->mmu->requestSave();
-                }
             }
 
             int64_t frame_end = esp_timer_get_time();
@@ -181,20 +164,23 @@ namespace emulator
 
             // Stats
             frame_count++;
+            emu_fps_count++;
+            emu_frame_time_sum += emu_time;
             if (!should_skip)
                 rendered_frames++;
             else
                 skipped_frames++;
 
-            // FPS Stats tracking (logged only when needed for debugging)
-            // Uncomment below to enable FPS logging every second:
-            // if (frame_count % 60 == 0)
-            // {
-            //     ESP_LOGI(TAG, "FPS Stats: rendered=%d, skipped=%d, lag_us=%lld, emu_time=%lld us",
-            //              rendered_frames, skipped_frames, emulator->lag_us, emu_time);
-            //     rendered_frames = 0;
-            //     skipped_frames = 0;
-            // }
+            // Emulation FPS log every second (Core 1 — true emulation speed)
+            int64_t now = esp_timer_get_time();
+            if (now - emu_fps_last_time >= 1000000LL) {
+                int64_t avg_frame_us = emu_fps_count ? (emu_frame_time_sum / emu_fps_count) : 0;
+                ESP_LOGI(TAG, "Emu FPS: %d  avg frame: %lld us  (target: 16742 us)",
+                         emu_fps_count, avg_frame_us);
+                emu_fps_count = 0;
+                emu_frame_time_sum = 0;
+                emu_fps_last_time = now;
+            }
 
             // Synchronization: sleep for remaining frame time
             int64_t elapsed = esp_timer_get_time() - frame_start;
@@ -202,8 +188,7 @@ namespace emulator
 
             if (sleep_us > 1000)
                 vTaskDelay(pdMS_TO_TICKS(sleep_us / 1000));
-            else
-                vTaskDelay(1); // ALWAYS yield at least 1 tick to let IDLE task run and avoid blocking other tasks and watchdog resets
+            // No forced yield when lagging: watchdog is disabled for this task (esp_task_wdt_delete)
         }
     }
 
@@ -267,7 +252,7 @@ namespace emulator
         ESP_LOGI(TAG, "PPU linked to MemoryBus for mode checks");
 
         // Link CGB resources to PPU (safe even if not CGB - pointers will be null-checked)
-        ppu->setVRAMBank1(mmu->getVRAMBank1());
+        ppu->setVRAMBank1(mmu->getVRAMBank1());  // TEST: revert to PSRAM to check regression
         ppu->setBGPaletteRAM(mmu->getBGPaletteRAM());
         ppu->setOBJPaletteRAM(mmu->getOBJPaletteRAM());
         ppu->setBGPalCache(mmu->getBGPalCache());
@@ -339,56 +324,59 @@ namespace emulator
     void Emulator::loadROMFile(const std::string &rom_path)
     {
         ESP_LOGI(TAG, "Loading ROM file: %s", rom_path.c_str());
+
+        // Get file size first to decide loading strategy
+        long file_size_l = storage::get_file_size(rom_path.c_str());
+        if (file_size_l <= 0) {
+            ESP_LOGE(TAG, "Cannot get file size for: %s", rom_path.c_str());
+            return;
+        }
+        size_t file_size = static_cast<size_t>(file_size_l);
+
+        // Cap to 4MB (PSRAM limit for simultaneous ROM banks)
+        if (file_size > 0x400000) {
+            ESP_LOGW(TAG, "ROM too large: %zu bytes, truncating to 4MB", file_size);
+            file_size = 0x400000;
+        }
+
+        // For large ROMs (> 512KB): stream directly into final destination to avoid
+        // double PSRAM allocation (buffer + rom_extended would exceed available PSRAM).
+        if (file_size > 0x80000) {
+            ESP_LOGI(TAG, "Large ROM (%zu KB): using direct streaming load", file_size / 1024);
+            mmu->loadROMFromFile(rom_path.c_str(), file_size);
+            // Skip the buffer path — rom is already loaded
+            goto rom_loaded;
+        }
+
+        {
+        // Small ROM: use existing buffer path
         uint8_t *rom_buffer = nullptr;
         size_t rom_size = 0;
         esp_err_t ret = storage::read_binary_file(rom_path.c_str(), &rom_buffer, &rom_size);
-
-        if (ret != ESP_OK || rom_buffer == nullptr)
-        {
+        if (ret != ESP_OK || rom_buffer == nullptr) {
             ESP_LOGE(TAG, "Failed to read ROM file: %s", rom_path.c_str());
             return;
         }
-
-        ESP_LOGI(TAG, "Loaded ROM: %s (%zu bytes)", rom_path.c_str(), rom_size);
-
-        // Validate ROM data
-        if (rom_buffer == nullptr || rom_size == 0)
-        {
-            ESP_LOGE(TAG, "Invalid ROM data: null pointer or zero size");
-            return;
-        }
-
-        // Check maximum size (2MB PSRAM limit)
-        if (rom_size > 0x200000)
-        {
-            ESP_LOGW(TAG, "ROM too large: %zu bytes (max 2MB supported)", rom_size);
-            ESP_LOGW(TAG, "Truncating to 2MB...");
-            rom_size = 0x200000;
-        }
-
-        // Load ROM into memory bus (MBC support now enabled)
         loadROM(rom_buffer, rom_size);
+        free(rom_buffer);
+        }
+
+        rom_loaded:
 
         // Re-initialize CPU registers now that cgb_mode is known from ROM header
-        // CGB games need A=0x11; DMG games need A=0x01
         cpu->initializePostBootROMState();
         ESP_LOGI(TAG, "CPU re-initialized for %s mode", mmu->isCGBMode() ? "CGB" : "DMG");
 
-        // Set ROM path for save management to create save file alongside ROM
+        // Set ROM path for save management
         mmu->setROMPath(rom_path);
 
         // Load SRAM from save file (if cartridge has battery)
         esp_err_t sram_ret = mmu->loadSRAM();
         if (sram_ret == ESP_OK)
-        {
             ESP_LOGI(TAG, "SRAM loaded from save file");
-        }
 
-        // Initialize async save task (Core 0) for safe saving
-        mmu->initSaveTask();
-
-        // Free the ROM buffer after loading (MMU should have copied it)
-        free(rom_buffer);
+        // Save task disabled (SPI contention with LCD)
+        // mmu->initSaveTask();
 
         ESP_LOGI(TAG, "ROM loaded successfully!");
     }

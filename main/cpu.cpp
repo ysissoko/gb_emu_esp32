@@ -101,10 +101,9 @@ namespace cpu
 
     bool CPU::test_interrupts_flags()
     {
-        // interrupt enable read
-        uint8_t ie = mmu.read(memory::IE_REGISTER);
-        // interrupt flag read
-        uint8_t if_ = mmu.read(memory::IF_REGISTER);
+        // Direct register access bypasses full mmu.read() dispatch (called every instruction).
+        uint8_t ie = mmu.readIE();
+        uint8_t if_ = mmu.readIF();
         // pending interrupts calculated from enabled interrupts and currently requested interrupts
         uint8_t pending = ie & if_;
 

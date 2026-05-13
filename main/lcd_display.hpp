@@ -61,9 +61,22 @@ namespace display
         // semaphore for DMA transfer tracking
         SemaphoreHandle_t dma_done_sem;
 
+        // ST7789 command codes used for direct window + streaming transfers.
+        // Mirrors TFT_eSPI's setAddrWindow()/pushPixelsDMA() idiom:
+        //   setAddrWindow → CASET + RASET (once per frame)
+        //   pushPixelsDMA → RAMWR (first chunk) + RAMWRC (subsequent chunks)
+        static constexpr int LCD_CMD_CASET  = 0x2A; // Set column (X) address window
+        static constexpr int LCD_CMD_RASET  = 0x2B; // Set row (Y) address window
+        static constexpr int LCD_CMD_RAMWR  = 0x2C; // Memory Write — resets write pointer to window origin
+        static constexpr int LCD_CMD_RAMWRC = 0x3C; // Memory Write Continue — no pointer reset
+
         // Chunked transfer: RGB565 buffer in internal SRAM (fast)
         static constexpr int CHUNK_LINES = 48; // Transfer 48 lines at a time: 3 chunks for 144-line GB frame
         static uint16_t rgb565_chunk[2][CHUNK_PIXELS];  // 240×48×2 = ~23 KB per buffer (double-buffered)
+
+        // Pre-computed nearest-neighbour scale maps (filled once in initialize())
+        static uint8_t x_scale_map[SCREEN_WIDTH];   // output x → source x (0-159)
+        static uint8_t y_scale_map[SCREEN_HEIGHT];  // output y → source y (0-143)
 
         // Callback for DMA completion
         static bool lcd_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,

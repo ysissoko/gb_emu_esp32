@@ -7,11 +7,16 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <algorithm>
 #include <cstring>
 
 namespace ppu
 {
+    // Pixel bit positions for NES-style bit-parallel tile decoding.
+    // Interleaved pattern: bits[15:14]=pixel0, [13:12]=pixel1 ... [1:0]=pixel7
+    static constexpr DRAM_ATTR uint8_t kPixelShift[8] = {14, 6, 12, 4, 10, 2, 8, 0};
+
     // Cycles per scanline mode
     constexpr uint16_t OAM_SCAN_CYCLES = 80;
     constexpr uint16_t DRAWING_CYCLES = 172;
@@ -34,21 +39,18 @@ namespace ppu
           visible_sprite_count(0),
           display(std::move(display))
     {
-        // Framebuffer en RAM interne (beaucoup plus rapide que PSRAM)
-        framebuffer = static_cast<uint16_t *>(
-            heap_caps_calloc(display::LCD_WIDTH * display::LCD_HEIGHT,
-                             sizeof(uint16_t),
-                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-
-        if (!framebuffer)
-        {
-            ESP_LOGE("PPU", "Failed to allocate framebuffer in INTERNAL RAM!");
+        // Double framebuffer in internal RAM — PPU writes fb_back, render task reads fb_front.
+        constexpr size_t fb_bytes = display::LCD_WIDTH * display::LCD_HEIGHT * sizeof(uint16_t);
+        for (int i = 0; i < 2; ++i) {
+            framebuffer[i] = static_cast<uint16_t *>(
+                heap_caps_calloc(display::LCD_WIDTH * display::LCD_HEIGHT,
+                                 sizeof(uint16_t),
+                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            if (!framebuffer[i]) {
+                ESP_LOGE("PPU", "Failed to allocate framebuffer[%d] in INTERNAL RAM!", i);
+            }
         }
-        else
-        {
-            ESP_LOGI("PPU", "Framebuffer allocated in INTERNAL RAM (%d bytes)",
-                     display::LCD_WIDTH * display::LCD_HEIGHT * (int)sizeof(uint16_t));
-        }
+        ESP_LOGI("PPU", "Double framebuffer allocated in INTERNAL RAM (%d bytes each)", (int)fb_bytes);
 
         vram = mmu.getVRAM();
         oam = mmu.getOAM();
@@ -67,10 +69,11 @@ namespace ppu
 
     PPU::~PPU()
     {
-        if (framebuffer)
-        {
-            heap_caps_free(framebuffer);
-            framebuffer = nullptr;
+        for (int i = 0; i < 2; ++i) {
+            if (framebuffer[i]) {
+                heap_caps_free(framebuffer[i]);
+                framebuffer[i] = nullptr;
+            }
         }
     }
 
@@ -149,6 +152,7 @@ namespace ppu
                 if (ly >= TOTAL_SCANLINES)
                 {
                     updateLY(0);
+                    clearTileCache();
                     setMode(Mode::OAM_SCAN);
                 }
             }
@@ -258,6 +262,7 @@ namespace ppu
 
     void PPU::renderBackground(const ScanlineContext &ctx)
     {
+        uint16_t* const fb = framebuffer[fb_back];
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
 
         const uint16_t tile_map_base =
@@ -284,7 +289,7 @@ namespace ppu
             // DMG: LCDC.0=0 disables BG and Window → fill line with BGP color 0 (white)
             if (UNLIKELY(!(ctx.lcdc & LCDC_BG_WINDOW_ENABLE))) {
                 const uint16_t white = dmgPalette()[(ctx.bgp >> 0) & 0x03];
-                uint16_t* row = framebuffer + fb_row;
+                uint16_t* row = fb + fb_row;
                 for (int x = 0; x < display::LCD_WIDTH; ++x) row[x] = white;
                 return;
             }
@@ -310,23 +315,26 @@ namespace ppu
                     tile_addr = tile_data_base + (tile_index * 16);
 
                 const uint16_t row_addr = tile_addr + (pixel_y * 2);
-                const uint8_t b1 = vram[row_addr - memory::VRAM_START];
-                const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
-
-                uint16_t tile_row[8];
-                for (int i = 0; i < 8; ++i)
-                {
-                    const uint8_t bit = 7 - i;
-                    const uint8_t color =
-                        ((b2 >> bit) & 1) << 1 |
-                        ((b1 >> bit) & 1);
-                    tile_row[i] = palette_lut[color];
+                const uint16_t vram_off = row_addr - memory::VRAM_START;
+                const uint16_t cache_hash = vram_off & (TILE_CACHE_SIZE - 1);
+                uint16_t pattern;
+                if (LIKELY(tile_cache_valid[cache_hash] &&
+                           tile_cache[cache_hash].vram_offset == vram_off)) {
+                    pattern = tile_cache[cache_hash].pattern;
+                } else {
+                    const uint8_t b1 = vram[vram_off];
+                    const uint8_t b2 = vram[vram_off + 1];
+                    pattern = ((b2 & 0xAA) << 8) | ((b2 & 0x55) << 1) |
+                              ((b1 & 0xAA) << 7) |  (b1 & 0x55);
+                    tile_cache[cache_hash] = {vram_off, pattern};
+                    tile_cache_valid[cache_hash] = true;
                 }
 
                 const int start_px = (tile == 0) ? fine_x : 0;
                 for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
                 {
-                    framebuffer[fb_row + screen_x++] = tile_row[px];
+                    fb[fb_row + screen_x++] =
+                        palette_lut[(pattern >> kPixelShift[px]) & 3];
                 }
             }
         } else {
@@ -372,24 +380,35 @@ namespace ppu
                     palette_lut = palette_lut_local;
                 }
 
-                uint16_t tile_row[8];
-                uint8_t  tile_colors[8];
                 const bool bg_prio = (attrs & 0x80) != 0;
-                for (int i = 0; i < 8; ++i)
-                {
-                    const uint8_t bit = x_flip ? i : (7 - i);
-                    const uint8_t color =
-                        ((b2 >> bit) & 1) << 1 |
-                        ((b1 >> bit) & 1);
-                    tile_row[i] = palette_lut[color];
-                    tile_colors[i] = color;
+
+                // Build interleaved pattern; flip direction handled by index remapping
+                uint16_t pattern;
+                if (LIKELY(!x_flip)) {
+                    pattern = ((b2 & 0xAA) << 8) | ((b2 & 0x55) << 1) |
+                              ((b1 & 0xAA) << 7) |  (b1 & 0x55);
+                } else {
+                    // x_flip: pixel 0 comes from bit 0, pixel 7 from bit 7
+                    // Reverse the standard interleave by swapping nibbles in each byte
+                    uint8_t rb1 = b1, rb2 = b2;
+                    // Reverse 8 bits
+                    auto rev8 = [](uint8_t v) -> uint8_t {
+                        v = ((v & 0xF0) >> 4) | ((v & 0x0F) << 4);
+                        v = ((v & 0xCC) >> 2) | ((v & 0x33) << 2);
+                        v = ((v & 0xAA) >> 1) | ((v & 0x55) << 1);
+                        return v;
+                    };
+                    rb1 = rev8(b1); rb2 = rev8(b2);
+                    pattern = ((rb2 & 0xAA) << 8) | ((rb2 & 0x55) << 1) |
+                              ((rb1 & 0xAA) << 7) |  (rb1 & 0x55);
                 }
 
                 const int start_px = (tile == 0) ? fine_x : 0;
                 for (int px = start_px; px < 8 && screen_x < display::LCD_WIDTH; ++px)
                 {
-                    framebuffer[fb_row + screen_x] = tile_row[px];
-                    bg_color_index[screen_x]   = tile_colors[px];
+                    const uint8_t color = (pattern >> kPixelShift[px]) & 3;
+                    fb[fb_row +screen_x] = palette_lut[color];
+                    bg_color_index[screen_x]   = color;
                     bg_tile_priority[screen_x] = bg_prio;
                     ++screen_x;
                 }
@@ -405,6 +424,7 @@ namespace ppu
         if (UNLIKELY(ctx.wy > ly || ctx.wx >= 167))
             return;
 
+        uint16_t* const fb = framebuffer[fb_back];
         bool pixels_rendered = false;
         const int win_x_start = ctx.wx - 7;
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
@@ -451,17 +471,19 @@ namespace ppu
                     tile_addr = tile_data_base + (tile_index * 16);
 
                 const uint16_t row_addr = tile_addr + pixel_y * 2;
-                const uint8_t b1 = vram[row_addr - memory::VRAM_START];
-                const uint8_t b2 = vram[row_addr - memory::VRAM_START + 1];
-
-                uint16_t tile_row[8];
-                for (int i = 0; i < 8; ++i)
-                {
-                    const uint8_t bit = 7 - i;
-                    const uint8_t color =
-                        ((b2 >> bit) & 1) << 1 |
-                        ((b1 >> bit) & 1);
-                    tile_row[i] = palette_lut[color];
+                const uint16_t win_vram_off = row_addr - memory::VRAM_START;
+                const uint16_t win_cache_hash = win_vram_off & (TILE_CACHE_SIZE - 1);
+                uint16_t pattern;
+                if (LIKELY(tile_cache_valid[win_cache_hash] &&
+                           tile_cache[win_cache_hash].vram_offset == win_vram_off)) {
+                    pattern = tile_cache[win_cache_hash].pattern;
+                } else {
+                    const uint8_t b1 = vram[win_vram_off];
+                    const uint8_t b2 = vram[win_vram_off + 1];
+                    pattern = ((b2 & 0xAA) << 8) | ((b2 & 0x55) << 1) |
+                              ((b1 & 0xAA) << 7) |  (b1 & 0x55);
+                    tile_cache[win_cache_hash] = {win_vram_off, pattern};
+                    tile_cache_valid[win_cache_hash] = true;
                 }
 
                 for (int i = 0; i < 8; ++i)
@@ -474,7 +496,7 @@ namespace ppu
 
                     const int tile_pixel = (px0 + i) & 0x7;
                     pixels_rendered = true;
-                    framebuffer[fb_row + sx] = tile_row[tile_pixel];
+                    fb[fb_row +sx] = palette_lut[(pattern >> kPixelShift[tile_pixel]) & 3];
                 }
             }
         } else {
@@ -511,29 +533,34 @@ namespace ppu
                 const uint8_t b1 = tile_vram[vram_offset];
                 const uint8_t b2 = tile_vram[vram_offset + 1];
 
-                const uint8_t* pal = bg_palette_ram + palette_num * 8;
                 // Use pre-converted palette cache when available
                 const uint16_t* palette_lut = bg_pal_cache
                     ? (bg_pal_cache + palette_num * 4)
                     : nullptr;
                 uint16_t palette_lut_local[4];
                 if (UNLIKELY(!palette_lut)) {
+                    const uint8_t* pal = bg_palette_ram + palette_num * 8;
                     for (int c = 0; c < 4; ++c)
                         palette_lut_local[c] = cgb_color_to_rgb565(pal[c * 2], pal[c * 2 + 1]);
                     palette_lut = palette_lut_local;
                 }
 
-                uint16_t tile_row[8];
-                uint8_t  tile_colors[8];
                 const bool bg_prio = (attrs & 0x80) != 0;
-                for (int i = 0; i < 8; ++i)
-                {
-                    const uint8_t bit = x_flip ? i : (7 - i);
-                    const uint8_t color =
-                        ((b2 >> bit) & 1) << 1 |
-                        ((b1 >> bit) & 1);
-                    tile_row[i] = palette_lut[color];
-                    tile_colors[i] = color;
+
+                uint16_t win_pattern;
+                if (LIKELY(!x_flip)) {
+                    win_pattern = ((b2 & 0xAA) << 8) | ((b2 & 0x55) << 1) |
+                                  ((b1 & 0xAA) << 7) |  (b1 & 0x55);
+                } else {
+                    auto rev8 = [](uint8_t v) -> uint8_t {
+                        v = ((v & 0xF0) >> 4) | ((v & 0x0F) << 4);
+                        v = ((v & 0xCC) >> 2) | ((v & 0x33) << 2);
+                        v = ((v & 0xAA) >> 1) | ((v & 0x55) << 1);
+                        return v;
+                    };
+                    uint8_t rb1 = rev8(b1), rb2 = rev8(b2);
+                    win_pattern = ((rb2 & 0xAA) << 8) | ((rb2 & 0x55) << 1) |
+                                  ((rb1 & 0xAA) << 7) |  (rb1 & 0x55);
                 }
 
                 for (int i = 0; i < 8; ++i)
@@ -545,9 +572,10 @@ namespace ppu
                         continue;
 
                     const int tile_pixel = (px0 + i) & 0x7;
+                    const uint8_t color = (win_pattern >> kPixelShift[tile_pixel]) & 3;
                     pixels_rendered = true;
-                    framebuffer[fb_row + sx]   = tile_row[tile_pixel];
-                    bg_color_index[sx]         = tile_colors[tile_pixel];
+                    fb[fb_row +sx]   = palette_lut[color];
+                    bg_color_index[sx]         = color;
                     bg_tile_priority[sx]       = bg_prio;
                 }
             }
@@ -598,6 +626,7 @@ namespace ppu
         const uint8_t sprite_height =
             (ctx.lcdc & LCDC_OBJ_SIZE) ? 16 : 8;
 
+        uint16_t* const fb = framebuffer[fb_back];
         const size_t fb_row = static_cast<size_t>(ly) * display::LCD_WIDTH;
 
         // Pre-calculate sprite palettes
@@ -690,11 +719,11 @@ namespace ppu
                         continue;
                 } else {
                     // DMG: OAM attr.7=1 → sprite behind BG (only draws over BG color 0)
-                    if (UNLIKELY(has_priority && framebuffer[fb_row + sx] != bg_color))
+                    if (UNLIKELY(has_priority && fb[fb_row +sx] != bg_color))
                         continue;
                 }
 
-                framebuffer[fb_row + sx] = palette[color];
+                fb[fb_row +sx] = palette[color];
             }
         }
     }
@@ -722,10 +751,20 @@ namespace ppu
         ESP_LOGI("PPU", "Render task started on core %d", xPortGetCoreID());
 
         uint16_t *frame = nullptr;
+        uint32_t fps_frame_count = 0;
+        int64_t fps_last_time = esp_timer_get_time();
+
         while (true)
         {
             if (xQueueReceive(frame_queue, &frame, portMAX_DELAY) == pdTRUE)
             {
+                fps_frame_count++;
+                int64_t now = esp_timer_get_time();
+                if (now - fps_last_time >= 1000000LL) {
+                    ESP_LOGI("PPU", "FPS: %lu", (unsigned long)fps_frame_count);
+                    fps_frame_count = 0;
+                    fps_last_time = now;
+                }
                 // La framebuffer est en RAM interne, mais le LCD DMA ne lit pas la PSRAM;
                 // votre LCDDisplay fait déjà le chunk/copie DMA interne si besoin.
 
@@ -745,10 +784,12 @@ namespace ppu
         if (!frame_queue)
             return;
 
-        // Always queue the framebuffer for display
-        // Even if rendering was skipped, we want to show the last frame
-        // The should_render_frame flag only affects whether we UPDATE the framebuffer
-        uint16_t *fb_ptr = framebuffer;
+        // Swap buffers: the just-completed back buffer becomes the new front (for the render task),
+        // and the old front becomes the new back (for the next frame's PPU writes).
+        fb_back  ^= 1;
+        fb_front ^= 1;
+
+        uint16_t *fb_ptr = framebuffer[fb_front];
         xQueueOverwrite(frame_queue, &fb_ptr);
     }
 

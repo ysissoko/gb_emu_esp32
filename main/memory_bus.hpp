@@ -99,15 +99,21 @@ namespace memory
         ~MemoryBus();
 
         // 8-bit read/write operations
-        IRAM_ATTR uint8_t read(uint16_t address) const __attribute__((hot));
+        // read() is inline: fast paths (ROM, HRAM, WRAM) have zero call overhead.
+        // readSlow() handles the remaining cases (VRAM, IO, external RAM, etc.).
+        IRAM_ATTR inline uint8_t read(uint16_t address) const __attribute__((hot));
+        IRAM_ATTR uint8_t readSlow(uint16_t address) const __attribute__((hot));
         IRAM_ATTR void write(uint16_t address, uint8_t value) __attribute__((hot));
 
         // 16-bit read/write operations (little-endian)
         IRAM_ATTR uint16_t read16(uint16_t address) const __attribute__((hot));
         IRAM_ATTR void write16(uint16_t address, uint16_t value) __attribute__((hot));
 
-        // Load ROM into memory
-        void loadROM(const uint8_t* data, size_t size);
+        // Load ROM into memory. skip_extended_copy=true: allocate rom_extended but don't memcpy
+        // (caller will fill it via loadROMFromFile)
+        void loadROM(const uint8_t* data, size_t size, bool skip_extended_copy = false);
+        // Load ROM directly from file — avoids double PSRAM allocation for large ROMs
+        void loadROMFromFile(const char* path, size_t file_size);
 
         // Set ROM path for save management
         void setROMPath(const std::string& path) { rom_path = path; }
@@ -163,6 +169,16 @@ namespace memory
         // Bypasses the CPU-facing write protection on bits 0-2 (mode + LYC=LY flag).
         inline void writePPUStat(uint8_t stat) { io_registers[0x41] = stat; }
 
+        // Fast direct accessors for registers read on every CPU instruction (hot path).
+        // Bypass the full read() dispatch to avoid branch-heavy I/O region handling.
+        IRAM_ATTR inline uint8_t readIE() const { return ie_register; }
+        IRAM_ATTR inline uint8_t readIF() const { return if_register | 0xE0; }
+
+        // Fast direct read for PPU rendering registers that have no side effects.
+        // Only valid for addresses whose read() path is a plain io_registers[] array lookup
+        // (e.g. LCDC=0x40, SCY=0x42, SCX=0x43, BGP=0x47, WY=0x4A, WX=0x4B, OBP0=0x48, OBP1=0x49).
+        IRAM_ATTR inline uint8_t readIOReg(uint8_t offset) const { return io_registers[offset]; }
+
         // Get serial debug output
         std::string getSerialDebugOutput() const;
         void clearSerialDebugOutput();
@@ -185,6 +201,7 @@ namespace memory
         bool isCGBMode() const { return cgb_mode; }
 
         inline const uint8_t* getVRAMBank1() const { return vram_bank1; }
+        inline const uint8_t* getVRAMBank1Cache() const { return vram_bank1_cache; }
         inline const uint8_t* getBGPaletteRAM() const { return bg_palette_ram; }
         inline const uint8_t* getOBJPaletteRAM() const { return obj_palette_ram; }
         inline const uint16_t* getBGPalCache() const { return &bg_pal_cache[0][0]; }
@@ -195,6 +212,10 @@ namespace memory
         // ROM - 32KB (0x0000-0x7FFF) base + extended banks in PSRAM
         std::array<uint8_t, 0x8000> rom;
 
+        // DRAM cache for the active switchable ROM bank (0x4000–0x7FFF)
+        uint8_t rom_bank_cache[0x4000]{};
+        void updateROMBankCache();
+
         // MBC (Memory Bank Controller) registers
         uint8_t mbc_type{0};        // 0=ROM only, 1=MBC1, 2=MBC2, 3=MBC3, 5=MBC5
         uint16_t rom_bank{1};       // Current ROM bank (1-511, bank 0 always at 0x0000-0x3FFF)
@@ -203,11 +224,12 @@ namespace memory
         uint8_t ram_bank{0};        // Current RAM bank (0-15)
         uint8_t mbc_mode{0};        // MBC1 mode register
         size_t rom_size{0};         // Total ROM size in bytes
+        size_t rom_extended_size{0}; // Precomputed: rom_size > 0x8000 ? rom_size - 0x8000 : 0
         ppu::PPU* ppu = nullptr;    // PPU reference for mode checks
         bool bootEnabled = false;   // Boot ROM disabled by default (skip animation, faster startup)
 
         // Extended ROM storage for MBC (allocated in PSRAM)
-        uint8_t* rom_extended{nullptr};  // Up to 2MB (128 banks × 16KB)
+        uint8_t* rom_extended{nullptr};  // Up to 4MB (256 banks × 16KB, MBC5)
 
         // Video RAM - 8KB (0x8000-0x9FFF)
         std::array<uint8_t, 0x2000> vram;
@@ -282,13 +304,16 @@ namespace memory
         // CGB mode flag
         bool cgb_mode{false};
 
-        // CGB VRAM bank 1 (8KB, PSRAM)
+        // CGB VRAM bank 1 (8KB, PSRAM) + DRAM write-through cache
         uint8_t* vram_bank1{nullptr};
+        uint8_t  vram_bank1_cache[0x2000]{};
         uint8_t vram_bank{0};   // Current VRAM bank (0 or 1), VBK register
 
-        // CGB WRAM extra banks 2-7 (6 × 4KB = 24KB, PSRAM)
+        // CGB WRAM extra banks 2-7 (6 × 4KB = 24KB, PSRAM) + DRAM cache for active bank
         uint8_t* wram_extra{nullptr};
+        uint8_t  wram_bank_cache[0x1000]{};
         uint8_t wram_bank{1};   // Active WRAM bank for 0xD000-0xDFFF (1-7)
+        void updateWRAMBankCache();
 
         // CGB color palette RAM
         uint8_t bg_palette_ram[64]{};   // 8 palettes × 4 colors × 2 bytes
@@ -305,4 +330,17 @@ namespace memory
         uint16_t hdma_dst{0};         // Current destination (always 0x8000-0x9FFF)
         uint8_t hdma_remaining{0};    // Remaining 16-byte blocks minus 1 (0x7F = done)
     };
+
+    // Inline fast paths — eliminates function-call overhead for the hot cases.
+    // ~70% of reads are ROM (instruction fetches); HRAM and WRAM cover most of the rest.
+    inline uint8_t MemoryBus::read(uint16_t address) const {
+        if (__builtin_expect(address < 0x8000, 1)) {
+            if (__builtin_expect(!bootEnabled || address >= 0x0100, 1))
+                return (address < 0x4000) ? rom[address] : rom_bank_cache[address - 0x4000];
+            return BOOT_ROM[address];
+        }
+        if (__builtin_expect(address >= 0xFF80 && address <= 0xFFFE, 1)) return hram[address - HRAM_START];
+        if (__builtin_expect(address >= 0xC000 && address < 0xD000, 1)) return wram[address - WRAM_START];
+        return readSlow(address);
+    }
 }

@@ -16,6 +16,8 @@
 namespace display
 {
     DMA_ATTR uint16_t LCDDisplay::rgb565_chunk[2][CHUNK_PIXELS];
+    uint8_t LCDDisplay::x_scale_map[SCREEN_WIDTH]{};
+    uint8_t LCDDisplay::y_scale_map[SCREEN_HEIGHT]{};
     
     // Helper to convert RGB565 to BGR565 for ST7789V Seengreat
     static constexpr uint16_t rgb_to_bgr565(uint16_t rgb)
@@ -170,6 +172,13 @@ namespace display
         // Delay to ensure screen is ready
         vTaskDelay(pdMS_TO_TICKS(100));
 
+        // Pre-compute nearest-neighbour scale maps for 160×144 → 240×216 (once, avoids per-pixel divisions)
+        constexpr int scaled_h = LCD_HEIGHT * SCREEN_WIDTH / LCD_WIDTH; // 216
+        for (int x = 0; x < SCREEN_WIDTH; ++x)
+            x_scale_map[x] = static_cast<uint8_t>(x * LCD_WIDTH / SCREEN_WIDTH);
+        for (int y = 0; y < SCREEN_HEIGHT; ++y)
+            y_scale_map[y] = static_cast<uint8_t>(y * LCD_HEIGHT / scaled_h);
+
         return ESP_OK;
     }
 
@@ -230,9 +239,30 @@ namespace display
             return;
         }
 
+        // Set address window ONCE for the full output area — like TFT_eSPI's setAddrWindow().
+        // The ST7789 write pointer then auto-advances through this window; we stream chunks
+        // with RAMWR (first) + RAMWRC (rest) without re-sending CASET/RASET per chunk.
+        // x_gap = y_gap = 0 (set in initialize()), so raw coordinates match panel coordinates.
+        {
+            const uint8_t caset[4] = {
+                static_cast<uint8_t>(offset_x >> 8),
+                static_cast<uint8_t>(offset_x & 0xFF),
+                static_cast<uint8_t>((offset_x + draw_width  - 1) >> 8),
+                static_cast<uint8_t>((offset_x + draw_width  - 1) & 0xFF),
+            };
+            const uint8_t raset[4] = {
+                static_cast<uint8_t>(offset_y >> 8),
+                static_cast<uint8_t>(offset_y & 0xFF),
+                static_cast<uint8_t>((offset_y + draw_height - 1) >> 8),
+                static_cast<uint8_t>((offset_y + draw_height - 1) & 0xFF),
+            };
+            esp_lcd_panel_io_tx_param(io_handle, LCD_CMD_CASET, caset, sizeof(caset));
+            esp_lcd_panel_io_tx_param(io_handle, LCD_CMD_RASET, raset, sizeof(raset));
+        }
+
         int buf = 0;
         bool first = true;
-        int out_y = 0; // Output line counter
+        int out_y = 0;
 
         for (; out_y < draw_height; out_y += CHUNK_LINES)
         {
@@ -241,36 +271,29 @@ namespace display
             // Prepare chunk — scale or copy
             if (scaling) {
                 for (int line = 0; line < lines; ++line) {
-                    int y_src = (out_y + line) * in_h / height;
-                    const uint16_t* src_row = buffer + y_src * in_w;
+                    const uint16_t* src_row = buffer + y_scale_map[out_y + line] * in_w;
                     uint16_t* dst_row = rgb565_chunk[buf] + line * draw_width;
-                    for (int x = 0; x < draw_width; ++x) {
-                        dst_row[x] = src_row[x * in_w / draw_width];
-                    }
+                    for (int x = 0; x < draw_width; ++x)
+                        dst_row[x] = src_row[x_scale_map[x]];
                 }
             } else {
                 const uint16_t *src = buffer + out_y * width;
                 memcpy(rgb565_chunk[buf], src, draw_width * lines * sizeof(uint16_t));
             }
 
-            // Wait for previous DMA before kicking off next transfer
-            if (!first)
-            {
-                waitForTransfer();
-            }
+            // Wait for previous DMA to finish before submitting next chunk
+            if (!first) waitForTransfer();
+
+            const size_t chunk_bytes = static_cast<size_t>(draw_width) * lines * sizeof(uint16_t);
+            // RAMWR resets the write pointer to the window origin; RAMWRC continues from last position.
+            const int cmd = first ? LCD_CMD_RAMWR : LCD_CMD_RAMWRC;
             first = false;
 
-            esp_err_t ret = esp_lcd_panel_draw_bitmap(
-                panel,
-                offset_x,
-                offset_y + out_y,
-                offset_x + draw_width,
-                offset_y + out_y + lines,
-                rgb565_chunk[buf]);
-
+            esp_err_t ret = esp_lcd_panel_io_tx_color(io_handle, cmd,
+                                                       rgb565_chunk[buf], chunk_bytes);
             if (ret != ESP_OK)
             {
-                ESP_LOGE(TAG_LCD, "chunk draw failed at y=%d: %s",
+                ESP_LOGE(TAG_LCD, "chunk tx failed at y=%d: %s",
                          out_y, esp_err_to_name(ret));
                 return;
             }
@@ -278,7 +301,7 @@ namespace display
             buf ^= 1;
         }
 
-        // Wait for latest transfer ends
+        // Wait for the last DMA to finish
         waitForTransfer();
     }
 

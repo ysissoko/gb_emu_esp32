@@ -5,6 +5,7 @@
 #include "esp_attr.h"
 
 #include <cstdint>
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <memory>
@@ -110,7 +111,7 @@ namespace ppu
         IRAM_ATTR void step(uint8_t cycles) __attribute__((hot));
 
         // Get framebuffer pointer for rendering (RGB565 format)
-        const uint16_t* getFramebuffer() const { return framebuffer; }
+        const uint16_t* getFramebuffer() const { return framebuffer[fb_front]; }
 
         // Get current scanline
         uint8_t getCurrentLine() const { return ly; }
@@ -157,9 +158,26 @@ namespace ppu
         uint8_t bg_color_index[display::LCD_WIDTH]{};   // BG/Win color index 0-3 per pixel
         bool    bg_tile_priority[display::LCD_WIDTH]{}; // BG Map attr bit 7 per pixel
 
-        // Framebuffer: Direct RGB565 (no conversion needed!)
-        // Allocated in INTERNAL RAM for fast access (DMA-compatible)
-        uint16_t* framebuffer{nullptr};
+        // Direct-mapped tile row cache (DMG only, palette-independent).
+        // Stores the bit-interleaved 16-bit pattern for a VRAM tile row.
+        // Flushed once per frame at the VBLANK→OAM_SCAN transition.
+        struct TileCacheEntry {
+            uint16_t vram_offset;
+            uint16_t pattern;
+        };
+        static constexpr int TILE_CACHE_SIZE = 512;
+        TileCacheEntry tile_cache[TILE_CACHE_SIZE]{};
+        bool tile_cache_valid[TILE_CACHE_SIZE]{};
+
+        void clearTileCache() {
+            memset(tile_cache_valid, 0, sizeof(tile_cache_valid));
+        }
+
+        // Double framebuffer: PPU writes to framebuffer[fb_back]; render task reads framebuffer[fb_front].
+        // Swapped atomically at VBLANK to avoid race conditions.
+        uint16_t* framebuffer[2]{nullptr, nullptr};
+        uint8_t   fb_back{0};   // index the PPU renders into
+        uint8_t   fb_front{1};  // index the render task reads from
 
         // 4-color palette for DMG and CGB games
         static constexpr uint16_t GB_PALETTE_BGR565[4] = {
@@ -212,13 +230,15 @@ namespace ppu
         IRAM_ATTR inline uint8_t readOBP1() const;  // Sprite palette 1
     };
 
-    // Inline implementations (must be in header for inline to work)
-    inline uint8_t PPU::readLCDC() const { return mmu.read(0xFF40); }
-    inline uint8_t PPU::readSCY() const { return mmu.read(0xFF42); }
-    inline uint8_t PPU::readSCX() const { return mmu.read(0xFF43); }
-    inline uint8_t PPU::readBGP() const { return mmu.read(0xFF47); }
-    inline uint8_t PPU::readWY() const { return mmu.read(0xFF4A); }
-    inline uint8_t PPU::readWX() const { return mmu.read(0xFF4B); }
-    inline uint8_t PPU::readOBP0() const { return mmu.read(0xFF48); }
-    inline uint8_t PPU::readOBP1() const { return mmu.read(0xFF49); }
+    // Inline implementations (must be in header for inline to work).
+    // Use readIOReg() to bypass the full mmu.read() dispatch — safe because these registers
+    // have no side-effects on read and live at plain io_registers[] offsets.
+    inline uint8_t PPU::readLCDC() const { return mmu.readIOReg(0x40); }
+    inline uint8_t PPU::readSCY()  const { return mmu.readIOReg(0x42); }
+    inline uint8_t PPU::readSCX()  const { return mmu.readIOReg(0x43); }
+    inline uint8_t PPU::readBGP()  const { return mmu.readIOReg(0x47); }
+    inline uint8_t PPU::readWY()   const { return mmu.readIOReg(0x4A); }
+    inline uint8_t PPU::readWX()   const { return mmu.readIOReg(0x4B); }
+    inline uint8_t PPU::readOBP0() const { return mmu.readIOReg(0x48); }
+    inline uint8_t PPU::readOBP1() const { return mmu.readIOReg(0x49); }
 }

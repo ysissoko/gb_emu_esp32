@@ -48,16 +48,36 @@ namespace apu
             // NR52 (0xFF26) - Power control
             if (address == NR52_REGISTER)
             {
-                // Bit 7: APU power (stub - always on)
-                // If turning off, clear all registers (except NR52)
                 if ((value & 0x80) == 0)
                 {
-                    for (int i = 0; i < 0x30; i++)
-                    {
+                    // Turning APU off: clear all registers (except NR52), clear all channel bits
+                    for (int i = 0; i < 0x30; i++) {
                         if (i != (NR52_REGISTER - 0xFF10))
                             registers[i] = 0;
                     }
+                    registers[NR52_REGISTER - 0xFF10] &= 0x80;  // keep bit7, clear channel bits
                 }
+            }
+            // DAC power-off clears the corresponding channel-active bit in NR52.
+            // Games check these bits to know when a channel has stopped.
+            else if (address == 0xFF11 && (value >> 6) == 0) {
+                // NR11 length load — not a DAC off signal, skip
+            }
+            else if (address == 0xFF12 && (value & 0xF8) == 0) {
+                // NR12 envelope DAC off (bits 7-3 = 0 → DAC off)
+                registers[NR52_REGISTER - 0xFF10] &= ~0x01;  // clear ch1 active
+            }
+            else if (address == 0xFF17 && (value & 0xF8) == 0) {
+                // NR22 envelope DAC off
+                registers[NR52_REGISTER - 0xFF10] &= ~0x02;  // clear ch2 active
+            }
+            else if (address == 0xFF1A && (value & 0x80) == 0) {
+                // NR30 bit7 = 0 → channel 3 DAC off
+                registers[NR52_REGISTER - 0xFF10] &= ~0x04;  // clear ch3 active
+            }
+            else if (address == 0xFF21 && (value & 0xF8) == 0) {
+                // NR42 envelope DAC off
+                registers[NR52_REGISTER - 0xFF10] &= ~0x08;  // clear ch4 active
             }
         }
     }

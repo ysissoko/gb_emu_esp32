@@ -1,5 +1,7 @@
 #include "save_manager.hpp"
 #include "esp_log.h"
+#include "esp_attr.h"
+#include <algorithm>
 #include <cstring>
 #include <stdio.h>
 
@@ -93,16 +95,29 @@ namespace save_manager
             return ESP_FAIL;
         }
 
-        size_t bytes_written = fwrite(sram_buffer, 1, sram_size, f);
+        // sram_buffer may point to PSRAM. Passing a PSRAM pointer directly to fwrite() causes
+        // the SDSPI driver to attempt SPI DMA from PSRAM, which flushes/disables the PSRAM cache
+        // and crashes the other core with a LoadProhibited fault. Copy to internal DRAM first.
+        static constexpr size_t CHUNK = 4096;
+        static DRAM_ATTR uint8_t chunk_buf[CHUNK];
+
+        size_t written = 0;
+        while (written < sram_size) {
+            size_t len = std::min(CHUNK, sram_size - written);
+            memcpy(chunk_buf, sram_buffer + written, len);
+            size_t w = fwrite(chunk_buf, 1, len, f);
+            written += w;
+            if (w != len) break;
+        }
         fclose(f);
 
-        if (bytes_written != sram_size)
+        if (written != sram_size)
         {
-            ESP_LOGE(TAG, "Failed to write SRAM: wrote %zu/%zu bytes", bytes_written, sram_size);
+            ESP_LOGE(TAG, "Failed to write SRAM: wrote %zu/%zu bytes", written, sram_size);
             return ESP_FAIL;
         }
 
-        ESP_LOGI(TAG, "SRAM saved successfully: %zu bytes", bytes_written);
+        ESP_LOGI(TAG, "SRAM saved successfully: %zu bytes", written);
         return ESP_OK;
     }
 }

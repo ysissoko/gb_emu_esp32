@@ -36,6 +36,8 @@ namespace cpu
         IRAM_ATTR uint8_t execute_extended(uint8_t) __attribute__((hot));
         IRAM_ATTR uint8_t step() __attribute__((hot));
         void run_frame();
+        inline uint16_t getPC() const { return pc; }
+        inline uint8_t  getA()  const { return a; }
 
         // DMA control - called by MemoryBus when DMA is triggered
         IRAM_ATTR inline void startDMA() {

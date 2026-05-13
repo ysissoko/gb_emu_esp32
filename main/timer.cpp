@@ -1,6 +1,9 @@
 #include "timer.hpp"
 #include "memory_bus.hpp"
 
+#define LIKELY(x)   __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+
 namespace timer {
 
 Timer::Timer(memory::MemoryBus& bus)
@@ -21,34 +24,42 @@ uint8_t Timer::timerBit() const {
 }
 
 void Timer::step(uint8_t cycles) {
-    for (uint8_t i = 0; i < cycles; ++i) {
-        // Handle overflow delay first (before incrementing div_counter)
-        if (tima_overflow) {
+    // Rare slow path: overflow delay needs per-cycle accuracy
+    if (UNLIKELY(tima_overflow)) {
+        for (uint8_t i = 0; i < cycles; ++i) {
             if (--overflow_delay == 0) {
-                // Load TMA into TIMA and request interrupt at the same time
                 tima = tma;
                 tima_overflow = false;
                 mmu.request_interrupt(memory::IRQFlag::IRQ_TIMER);
             }
-        }
-
-        // Get current state before increment
-        bool old_bit = timerEnabled() && ((div_counter >> timerBit()) & 1);
-
-        div_counter++;
-
-        // Get new state after increment
-        bool new_bit = timerEnabled() && ((div_counter >> timerBit()) & 1);
-
-        // Falling edge detection: old_bit was 1, new_bit is 0
-        if (old_bit && !new_bit) {
-            tima++;
-            // Check for overflow (TIMA goes from 0xFF to 0x00)
-            if (tima == 0x00) {
-                // TIMA is now 0x00, will be loaded with TMA after 4 cycles
-                tima_overflow = true;
-                overflow_delay = 4;
+            bool old_bit = timerEnabled() && ((div_counter >> timerBit()) & 1);
+            div_counter++;
+            bool new_bit = timerEnabled() && ((div_counter >> timerBit()) & 1);
+            if (old_bit && !new_bit) {
+                tima++;
+                if (tima == 0x00) { tima_overflow = true; overflow_delay = 4; }
             }
+        }
+        return;
+    }
+
+    // Fast path: batch-advance div_counter
+    uint16_t old_div = div_counter;
+    div_counter += cycles;
+
+    // Timer disabled: done (most common case)
+    if (LIKELY(!(tac & 0x04))) return;
+
+    // Timer enabled: check for a falling edge of the selected bit
+    // For cycles ≤ 12 the relevant bit (period ≥ 16) flips at most once
+    uint8_t bit = timerBit();
+    if (LIKELY(((old_div >> bit) & 1) == ((div_counter >> bit) & 1))) return;
+
+    if ((old_div >> bit) & 1) {  // falling edge: was 1, now 0
+        tima++;
+        if (UNLIKELY(tima == 0x00)) {
+            tima_overflow = true;
+            overflow_delay = 4;
         }
     }
 }

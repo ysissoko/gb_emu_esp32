@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "esp_attr.h"
 
 namespace memory {
     class MemoryBus;
@@ -19,7 +20,7 @@ public:
     explicit Timer(memory::MemoryBus& bus);
 
     // Appelé par la CPU avec le nombre exact de cycles exécutés
-    void step(uint8_t cycles);
+    IRAM_ATTR void step(uint8_t cycles) __attribute__((hot));
 
     // Registres
     uint8_t readDIV() const;
