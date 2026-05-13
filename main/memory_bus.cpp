@@ -201,10 +201,9 @@ namespace memory
                 // Bank 0 is forbidden for MBC1/2/3 in the switchable area, but MBC5 allows it
                 if (bank == 0 && mbc_type != 5) bank = 1;
 
-                // MBC5 bank 0 in switchable area maps to the same data as the fixed area
-                // (bank - 2 would underflow for bank=0, so handle explicitly)
+                // MBC5 allows bank 0 in the switchable area; map back to the bank-0 slice of rom[].
                 if (bank == 0) {
-                    return rom[address];
+                    return rom[address - 0x4000];
                 }
 
                 // Bank 1 est déjà dans rom[] (0x4000-0x7FFF)
